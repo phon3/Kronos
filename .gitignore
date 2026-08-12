@@ -54,6 +54,14 @@ Desktop.ini
 *.pt
 *.ckpt
 *.bin
+*.safetensors
+
+# Fine-tuned model output directories
+finetune_csv/finetuned/
+finetune/processed_datasets/
+
+# Backtest results
+backtest_results/
 
 # Logs
 *.log

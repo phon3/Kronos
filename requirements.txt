@@ -8,3 +8,11 @@ matplotlib==3.9.3
 pandas==2.2.2
 tqdm==4.67.1
 safetensors==0.6.2
+
+# Data ingestion
+ccxt>=4.0.0
+yfinance>=0.2.0
+pyyaml>=6.0
+
+# Testing
+pytest>=7.0.0
