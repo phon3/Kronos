@@ -5,9 +5,6 @@ from typing import Optional
 
 import numpy as np
 import pandas as pd
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
 
 from .trend_detector import Trends
 
@@ -94,7 +91,7 @@ class CryptoBacktester:
         df = df.set_index("timestamps")
 
         trends = Trends(
-            df[["high", "low", "close"]],
+            df[["open", "high", "low", "close"]],
             prd=prd,
             ext_break=ext_break,
             ext_limit=ext_limit,
@@ -369,6 +366,10 @@ class CryptoBacktester:
 
     def plot_results(self, results: pd.DataFrame, metrics: dict, output_path: str, title: str = "Kronos Backtest"):
         """Generate and save backtest result charts."""
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+
         fig, axes = plt.subplots(3, 1, figsize=(14, 12), sharex=True)
 
         # 1. Equity curve

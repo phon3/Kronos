@@ -7,12 +7,10 @@ from typing import Optional
 
 import numpy as np
 import pandas as pd
-import torch
 
 # Ensure project root is in path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from model import Kronos, KronosTokenizer, KronosPredictor
 from .crypto_backtest import CryptoBacktester
 from .report_generator import ReportGenerator
 
@@ -22,8 +20,11 @@ def load_model(
     model_path: str,
     device: str = "cpu",
     max_context: int = 512,
-) -> KronosPredictor:
+):
     """Load fine-tuned tokenizer and model into a KronosPredictor."""
+    import torch
+    from model import Kronos, KronosTokenizer, KronosPredictor
+
     print(f"Loading tokenizer from {tokenizer_path}...")
     tokenizer = KronosTokenizer.from_pretrained(tokenizer_path)
 
@@ -65,6 +66,8 @@ def generate_predictions(
     Returns:
         DataFrame with predicted close prices, indexed by timestamp
     """
+    import torch
+
     if feature_list is None:
         feature_list = ["open", "high", "low", "close", "volume", "amount"]
 

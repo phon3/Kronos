@@ -191,7 +191,7 @@ class Trends:
     ):
         if not isinstance(data.index, pd.DatetimeIndex):
             raise TypeError("data must be indexed with a pd.DatetimeIndex")
-        for col in ("high", "low", "close"):
+        for col in ("open", "high", "low", "close"):
             if col not in data.columns:
                 raise ValueError(f"data must include '{col}' column")
 
