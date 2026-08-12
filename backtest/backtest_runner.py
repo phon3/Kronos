@@ -128,13 +128,18 @@ def run_backtest(
     top_p: float = 0.9,
     sample_count: int = 5,
     title: str = "Kronos Crypto Backtest",
+    signal_mode: str = "kronos",
+    trend_prd: int = 60,
+    trend_ext_break: float = 0.05,
+    trend_ext_limit: float = 0.02,
+    trend_min_bars: int = 5,
 ) -> dict:
     """
     Full backtest pipeline: load model, generate predictions, run backtest, generate report.
 
     Args:
-        model_path: Path to fine-tuned Kronos model
-        tokenizer_path: Path to fine-tuned Kronos tokenizer
+        model_path: Path to fine-tuned Kronos model (required for 'kronos' and 'combined' modes)
+        tokenizer_path: Path to fine-tuned Kronos tokenizer (required for 'kronos' and 'combined' modes)
         data_path: Path to CSV with OHLCV data
         output_dir: Directory for output files
         device: 'cpu', 'cuda', or 'mps'
@@ -149,6 +154,11 @@ def run_backtest(
         top_p: Nucleus sampling threshold
         sample_count: Number of samples
         title: Report title
+        signal_mode: 'kronos', 'trend', or 'combined'
+        trend_prd: Trend detection period (bars)
+        trend_ext_break: Trend break line gradient
+        trend_ext_limit: Trend limit line gradient
+        trend_min_bars: Minimum bars for valid trend movement
 
     Returns:
         Metrics dict
@@ -159,19 +169,23 @@ def run_backtest(
     data["timestamps"] = pd.to_datetime(data["timestamps"])
     print(f"  {len(data)} rows, range: {data['timestamps'].min()} to {data['timestamps'].max()}")
 
-    # Load model
-    predictor = load_model(tokenizer_path, model_path, device, max_context)
+    predictions = None
+    actual = None
 
-    # Generate predictions
-    predictions = generate_predictions(
-        predictor, data,
-        lookback=lookback, pred_len=pred_len,
-        T=T, top_p=top_p, sample_count=sample_count,
-    )
+    if signal_mode in ("kronos", "combined"):
+        # Load model
+        predictor = load_model(tokenizer_path, model_path, device, max_context)
 
-    # Prepare actual data for backtest (only the predicted period)
-    pred_timestamps = predictions.index
-    actual = data[data["timestamps"].isin(pred_timestamps)].set_index("timestamps")[["close"]]
+        # Generate predictions
+        predictions = generate_predictions(
+            predictor, data,
+            lookback=lookback, pred_len=pred_len,
+            T=T, top_p=top_p, sample_count=sample_count,
+        )
+
+        # Prepare actual data for backtest (only the predicted period)
+        pred_timestamps = predictions.index
+        actual = data[data["timestamps"].isin(pred_timestamps)].set_index("timestamps")[["close"]]
 
     # Run backtest
     backtester = CryptoBacktester(
@@ -180,7 +194,35 @@ def run_backtest(
         allow_short=allow_short,
         fee_pct=fee_pct,
     )
-    metrics = backtester.run(predictions, actual, output_dir, title)
+
+    if signal_mode == "trend":
+        # Trend-only mode: no model predictions needed
+        actual = data.set_index("timestamps")[["close"]]
+        metrics = backtester.run(
+            predictions=pd.DataFrame(),
+            actual=actual,
+            output_dir=output_dir,
+            title=title,
+            signal_mode=signal_mode,
+            full_data=data,
+            trend_prd=trend_prd,
+            trend_ext_break=trend_ext_break,
+            trend_ext_limit=trend_ext_limit,
+            trend_min_bars=trend_min_bars,
+        )
+    else:
+        metrics = backtester.run(
+            predictions=predictions,
+            actual=actual,
+            output_dir=output_dir,
+            title=title,
+            signal_mode=signal_mode,
+            full_data=data if signal_mode == "combined" else None,
+            trend_prd=trend_prd,
+            trend_ext_break=trend_ext_break,
+            trend_ext_limit=trend_ext_limit,
+            trend_min_bars=trend_min_bars,
+        )
 
     # Generate HTML report
     report_gen = ReportGenerator()
@@ -189,7 +231,7 @@ def run_backtest(
         output_path=os.path.join(output_dir, "backtest_report.html"),
         title=title,
         data_path=data_path,
-        model_path=model_path,
+        model_path=model_path if signal_mode != "trend" else "trend-only",
     )
 
     return metrics
@@ -197,8 +239,8 @@ def run_backtest(
 
 def main():
     parser = argparse.ArgumentParser(description="Run Kronos backtest on crypto data")
-    parser.add_argument("--model", required=True, help="Path to fine-tuned Kronos model")
-    parser.add_argument("--tokenizer", required=True, help="Path to fine-tuned Kronos tokenizer")
+    parser.add_argument("--model", default=None, help="Path to fine-tuned Kronos model (not required for --signal-mode trend)")
+    parser.add_argument("--tokenizer", default=None, help="Path to fine-tuned Kronos tokenizer (not required for --signal-mode trend)")
     parser.add_argument("--data", required=True, help="Path to CSV with OHLCV data")
     parser.add_argument("--output", default="./backtest_results/", help="Output directory")
     parser.add_argument("--device", default="cpu", help="Device: cpu, cuda, mps")
@@ -210,12 +252,21 @@ def main():
     parser.add_argument("--fee", type=float, default=0.001, help="Fee percentage per trade")
     parser.add_argument("--temp", type=float, default=0.6, help="Sampling temperature")
     parser.add_argument("--samples", type=int, default=5, help="Number of prediction samples")
+    parser.add_argument("--signal-mode", choices=["kronos", "trend", "combined"], default="kronos",
+                        help="Signal source: kronos (model predictions), trend (trend detection only), combined (both)")
+    parser.add_argument("--trend-prd", type=int, default=60, help="Trend detection period (bars)")
+    parser.add_argument("--trend-ext-break", type=float, default=0.05, help="Trend break line gradient")
+    parser.add_argument("--trend-ext-limit", type=float, default=0.02, help="Trend limit line gradient")
+    parser.add_argument("--trend-min-bars", type=int, default=5, help="Minimum bars for valid trend movement")
 
     args = parser.parse_args()
 
+    if args.signal_mode in ("kronos", "combined") and (not args.model or not args.tokenizer):
+        parser.error(f"--model and --tokenizer are required when --signal-mode is {args.signal_mode}")
+
     metrics = run_backtest(
-        model_path=args.model,
-        tokenizer_path=args.tokenizer,
+        model_path=args.model or "",
+        tokenizer_path=args.tokenizer or "",
         data_path=args.data,
         output_dir=args.output,
         device=args.device,
@@ -227,6 +278,11 @@ def main():
         fee_pct=args.fee,
         T=args.temp,
         sample_count=args.samples,
+        signal_mode=args.signal_mode,
+        trend_prd=args.trend_prd,
+        trend_ext_break=args.trend_ext_break,
+        trend_ext_limit=args.trend_ext_limit,
+        trend_min_bars=args.trend_min_bars,
     )
 
     if metrics:

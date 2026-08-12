@@ -9,6 +9,8 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
+from .trend_detector import Trends
+
 
 class CryptoBacktester:
     """
@@ -63,6 +65,107 @@ class CryptoBacktester:
             combined.loc[combined["pred_return"] < -self.threshold, "signal"] = -1  # Sell short
 
         # Position: hold until opposite signal
+        combined["position"] = combined["signal"].replace(0, np.nan).ffill().fillna(0)
+
+        return combined
+
+    def generate_trend_signals(
+        self,
+        data: pd.DataFrame,
+        prd: int = 60,
+        ext_break: float = 0.05,
+        ext_limit: float = 0.02,
+        min_bars: int = 5,
+    ) -> pd.DataFrame:
+        """Generate trading signals from trend detection (no model required).
+
+        Args:
+            data: DataFrame with 'timestamps', 'high', 'low', 'close' columns
+            prd: Period (bars) for trend break/limit line evaluation
+            ext_break: Break line gradient as percentage over prd
+            ext_limit: Limit line gradient as percentage over prd
+            min_bars: Minimum bars for a valid movement
+
+        Returns:
+            DataFrame with columns: actual_close, trend_signal, position
+        """
+        df = data.copy()
+        df["timestamps"] = pd.to_datetime(df["timestamps"])
+        df = df.set_index("timestamps")
+
+        trends = Trends(
+            df[["high", "low", "close"]],
+            prd=prd,
+            ext_break=ext_break,
+            ext_limit=ext_limit,
+            min_bars=min_bars,
+        )
+        trend_signals = trends.get_trend_signals()
+
+        signals = pd.DataFrame(index=df.index)
+        signals["actual_close"] = df["close"].astype(float)
+        signals["trend_signal"] = trend_signals
+        signals["signal"] = trend_signals
+        signals["position"] = trend_signals.replace(0, np.nan).ffill().fillna(0).astype(int)
+
+        return signals
+
+    def generate_combined_signals(
+        self,
+        predictions: pd.DataFrame,
+        actual: pd.DataFrame,
+        full_data: pd.DataFrame,
+        trend_prd: int = 60,
+        trend_ext_break: float = 0.05,
+        trend_ext_limit: float = 0.02,
+        trend_min_bars: int = 5,
+    ) -> pd.DataFrame:
+        """Generate signals combining Kronos predictions with trend confirmation.
+
+        A position is only opened when both Kronos prediction and trend detection
+        agree on direction. Positions are closed when either signal reverses.
+
+        Args:
+            predictions: DataFrame with predicted close prices
+            actual: DataFrame with actual close prices
+            full_data: Full OHLCV DataFrame with 'timestamps' column
+            trend_prd: Trend detection period
+            trend_ext_break: Trend break line gradient
+            trend_ext_limit: Trend limit line gradient
+            trend_min_bars: Minimum bars for valid trend movement
+
+        Returns:
+            DataFrame with columns: actual_close, predicted_close, pred_return,
+            trend_signal, signal, position
+        """
+        # Get Kronos-based signals
+        kronos_signals = self.generate_signals(predictions, actual)
+
+        # Get trend-based signals
+        trend_signals = self.generate_trend_signals(
+            full_data,
+            prd=trend_prd,
+            ext_break=trend_ext_break,
+            ext_limit=trend_ext_limit,
+            min_bars=trend_min_bars,
+        )
+
+        # Align trend signals to the prediction period
+        combined = kronos_signals.copy()
+        combined["trend_signal"] = trend_signals["trend_signal"].reindex(combined.index).ffill().fillna(0)
+
+        # Combined signal: only enter when both agree
+        combined["signal"] = 0
+        kronos_long = combined["position"] > 0
+        kronos_short = combined["position"] < 0
+        trend_long = combined["trend_signal"] > 0
+        trend_short = combined["trend_signal"] < 0
+
+        combined.loc[kronos_long & trend_long, "signal"] = 1
+        if self.allow_short:
+            combined.loc[kronos_short & trend_short, "signal"] = -1
+
+        # Position: hold until either signal reverses
         combined["position"] = combined["signal"].replace(0, np.nan).ffill().fillna(0)
 
         return combined
@@ -324,20 +427,54 @@ class CryptoBacktester:
         actual: pd.DataFrame,
         output_dir: str = "./backtest_results/",
         title: str = "Kronos Crypto Backtest",
+        signal_mode: str = "kronos",
+        full_data: Optional[pd.DataFrame] = None,
+        trend_prd: int = 60,
+        trend_ext_break: float = 0.05,
+        trend_ext_limit: float = 0.02,
+        trend_min_bars: int = 5,
     ) -> dict:
         """
         Full backtest pipeline: generate signals, run backtest, calculate metrics, plot results.
 
         Args:
-            predictions: DataFrame with predicted close prices
+            predictions: DataFrame with predicted close prices (required for 'kronos' and 'combined' modes)
             actual: DataFrame with actual close prices
             output_dir: Directory to save results
             title: Chart title
+            signal_mode: 'kronos' (prediction only), 'trend' (trend only), or 'combined' (both)
+            full_data: Full OHLCV DataFrame with 'timestamps' column (required for 'trend' and 'combined' modes)
+            trend_prd: Trend detection period
+            trend_ext_break: Trend break line gradient
+            trend_ext_limit: Trend limit line gradient
+            trend_min_bars: Minimum bars for valid trend movement
 
         Returns:
             Metrics dict
         """
-        signals = self.generate_signals(predictions, actual)
+        if signal_mode == "trend":
+            if full_data is None:
+                raise ValueError("full_data is required for trend signal mode")
+            signals = self.generate_trend_signals(
+                full_data,
+                prd=trend_prd,
+                ext_break=trend_ext_break,
+                ext_limit=trend_ext_limit,
+                min_bars=trend_min_bars,
+            )
+        elif signal_mode == "combined":
+            if full_data is None:
+                raise ValueError("full_data is required for combined signal mode")
+            signals = self.generate_combined_signals(
+                predictions, actual, full_data,
+                trend_prd=trend_prd,
+                trend_ext_break=trend_ext_break,
+                trend_ext_limit=trend_ext_limit,
+                trend_min_bars=trend_min_bars,
+            )
+        else:
+            signals = self.generate_signals(predictions, actual)
+
         results, trades = self.run_backtest(signals)
         metrics = self.calculate_metrics(results, trades)
 

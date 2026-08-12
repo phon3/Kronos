@@ -267,6 +267,66 @@ Then pull on the other machine to review.
 
 ---
 
+## Backtest Signal Modes
+
+The backtest runner supports three signal modes via `--signal-mode`:
+
+### `kronos` (default) — Model predictions only
+Uses Kronos predicted returns to generate long/short signals. Requires `--model` and `--tokenizer`.
+
+```bash
+python -m backtest.backtest_runner \
+  --model ./finetune_csv/finetuned/btc_usd_1h_dev/basemodel/best_model \
+  --tokenizer ./finetune_csv/finetuned/btc_usd_1h_dev/tokenizer/best_model \
+  --data ./data/BTC_USD_1h.csv \
+  --device cuda \
+  --signal-mode kronos \
+  --output ./backtest_results/btc_kronos/
+```
+
+### `trend` — Trend detection only (no model needed)
+Uses the ported trend detection algorithm (break line / limit line) to identify advance/decline movements. No model or tokenizer required — runs on any machine.
+
+```bash
+python -m backtest.backtest_runner \
+  --data ./data/BTC_USD_1h.csv \
+  --signal-mode trend \
+  --trend-prd 60 \
+  --trend-ext-break 0.05 \
+  --trend-ext-limit 0.02 \
+  --trend-min-bars 5 \
+  --output ./backtest_results/btc_trend/
+```
+
+### `combined` — Kronos predictions + trend confirmation
+Only enters a position when both Kronos prediction and trend detection agree on direction. Closes when either signal reverses. Requires model + tokenizer + data.
+
+```bash
+python -m backtest.backtest_runner \
+  --model ./finetune_csv/finetuned/btc_usd_1h_dev/basemodel/best_model \
+  --tokenizer ./finetune_csv/finetuned/btc_usd_1h_dev/tokenizer/best_model \
+  --data ./data/BTC_USD_1h.csv \
+  --device cuda \
+  --signal-mode combined \
+  --trend-prd 60 \
+  --trend-ext-break 0.05 \
+  --trend-ext-limit 0.02 \
+  --output ./backtest_results/btc_combined/
+```
+
+### Trend detection parameters
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `--trend-prd` | 60 | Period (bars) for break/limit line evaluation |
+| `--trend-ext-break` | 0.05 | Break line gradient (5% over prd bars) |
+| `--trend-ext-limit` | 0.02 | Limit line gradient (2% over prd bars) |
+| `--trend-min-bars` | 5 | Minimum bars for a valid movement |
+
+Lower thresholds = more sensitive (more trades). Higher thresholds = more conservative (fewer, larger movements).
+
+---
+
 ## Quick Reference: Full Workflow
 
 ```

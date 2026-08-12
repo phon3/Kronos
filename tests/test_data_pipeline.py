@@ -187,3 +187,101 @@ class TestCryptoBacktester:
 
         assert (tmp_path / "backtest_chart.png").exists()
         assert (tmp_path / "backtest_results.csv").exists()
+
+    def test_trend_signal_mode(self, tmp_path):
+        """Test backtest using trend-only signals (no model required)."""
+        n = 300
+        dates = pd.date_range("2024-01-01", periods=n, freq="1h")
+        # Create data with a clear uptrend
+        closes = np.linspace(40000, 50000, n) + np.random.randn(n) * 50
+        data = pd.DataFrame({
+            "timestamps": dates.strftime("%Y-%m-%d %H:%M:%S"),
+            "open": closes - 10,
+            "high": closes + 50,
+            "low": closes - 50,
+            "close": closes,
+            "volume": np.random.uniform(100, 1000, n),
+            "amount": np.random.uniform(1000000, 5000000, n),
+        })
+
+        bt = CryptoBacktester(threshold=0.01, initial_capital=10000)
+        actual = data.set_index("timestamps")[["close"]]
+        actual.index = pd.to_datetime(actual.index)
+
+        metrics = bt.run(
+            predictions=pd.DataFrame(),
+            actual=actual,
+            output_dir=str(tmp_path),
+            title="Trend-only Backtest",
+            signal_mode="trend",
+            full_data=data,
+            trend_prd=10,
+            trend_ext_break=0.02,
+            trend_ext_limit=0.005,
+            trend_min_bars=2,
+        )
+
+        assert "total_return" in metrics
+        assert (tmp_path / "backtest_chart.png").exists()
+        assert (tmp_path / "backtest_results.csv").exists()
+
+    def test_combined_signal_mode(self, tmp_path):
+        """Test backtest using combined Kronos + trend signals."""
+        n = 300
+        dates = pd.date_range("2024-01-01", periods=n, freq="1h")
+        closes = np.linspace(40000, 50000, n) + np.random.randn(n) * 50
+        data = pd.DataFrame({
+            "timestamps": dates.strftime("%Y-%m-%d %H:%M:%S"),
+            "open": closes - 10,
+            "high": closes + 50,
+            "low": closes - 50,
+            "close": closes,
+            "volume": np.random.uniform(100, 1000, n),
+            "amount": np.random.uniform(1000000, 5000000, n),
+        })
+
+        actual = data.set_index("timestamps")[["close"]]
+        actual.index = pd.to_datetime(actual.index)
+        predictions = pd.DataFrame({"close": closes * 1.002}, index=actual.index)
+
+        bt = CryptoBacktester(threshold=0.001, initial_capital=10000)
+        metrics = bt.run(
+            predictions=predictions,
+            actual=actual,
+            output_dir=str(tmp_path),
+            title="Combined Backtest",
+            signal_mode="combined",
+            full_data=data,
+            trend_prd=10,
+            trend_ext_break=0.02,
+            trend_ext_limit=0.005,
+            trend_min_bars=2,
+        )
+
+        assert "total_return" in metrics
+        assert (tmp_path / "backtest_chart.png").exists()
+
+    def test_trend_signals_generation(self):
+        """Test that generate_trend_signals returns proper DataFrame."""
+        n = 100
+        dates = pd.date_range("2024-01-01", periods=n, freq="1h")
+        closes = np.linspace(100, 130, n)
+        data = pd.DataFrame({
+            "timestamps": dates.strftime("%Y-%m-%d %H:%M:%S"),
+            "open": closes - 0.5,
+            "high": closes + 1.0,
+            "low": closes - 1.0,
+            "close": closes,
+        })
+
+        bt = CryptoBacktester()
+        signals = bt.generate_trend_signals(
+            data, prd=5, ext_break=0.05, ext_limit=0.02, min_bars=2
+        )
+
+        assert "actual_close" in signals.columns
+        assert "trend_signal" in signals.columns
+        assert "signal" in signals.columns
+        assert "position" in signals.columns
+        assert len(signals) == n
+        assert signals["trend_signal"].isin([0, 1, -1]).all()
