@@ -25,6 +25,19 @@ def load_model(
     import torch
     from model import Kronos, KronosTokenizer, KronosPredictor
 
+    if not os.path.isdir(tokenizer_path):
+        raise FileNotFoundError(
+            f"Tokenizer path not found: {tokenizer_path}\n"
+            "Ensure you have pulled trained models from the GPU server. "
+            "See docs/mac_workflow.md Step 5 or docs/gpu_training_workflow.md Step 5."
+        )
+    if not os.path.isdir(model_path):
+        raise FileNotFoundError(
+            f"Model path not found: {model_path}\n"
+            "Ensure you have pulled trained models from the GPU server. "
+            "See docs/mac_workflow.md Step 5 or docs/gpu_training_workflow.md Step 5."
+        )
+
     print(f"Loading tokenizer from {tokenizer_path}...")
     tokenizer = KronosTokenizer.from_pretrained(tokenizer_path)
 
