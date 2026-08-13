@@ -149,6 +149,11 @@ def run_backtest(
     trend_ext_break: float = 0.05,
     trend_ext_limit: float = 0.02,
     trend_min_bars: int = 5,
+    position_size_pct: float = 1.0,
+    stop_loss_pct: Optional[float] = None,
+    take_profit_pct: Optional[float] = None,
+    walk_forward: bool = False,
+    train_ratio: float = 0.7,
 ) -> dict:
     """
     Full backtest pipeline: load model, generate predictions, run backtest, generate report.
@@ -209,7 +214,37 @@ def run_backtest(
         threshold=threshold,
         allow_short=allow_short,
         fee_pct=fee_pct,
+        position_size_pct=position_size_pct,
+        stop_loss_pct=stop_loss_pct,
+        take_profit_pct=take_profit_pct,
     )
+
+    if walk_forward:
+        if signal_mode == "trend":
+            actual = data.set_index("timestamps")[["close"]]
+        # predictions and actual already set above for kronos/combined
+        metrics = backtester.run_walk_forward(
+            predictions=predictions if predictions is not None else pd.DataFrame(),
+            actual=actual if actual is not None else data.set_index("timestamps")[["close"]],
+            full_data=data,
+            train_ratio=train_ratio,
+            output_dir=output_dir,
+            title=title,
+            signal_mode=signal_mode,
+            trend_prd=trend_prd,
+            trend_ext_break=trend_ext_break,
+            trend_ext_limit=trend_ext_limit,
+            trend_min_bars=trend_min_bars,
+        )
+        report_gen = ReportGenerator()
+        report_gen.generate_report(
+            metrics=metrics.get("out_of_sample", metrics),
+            output_path=os.path.join(output_dir, "backtest_report.html"),
+            title=f"{title} (Walk-Forward)",
+            data_path=data_path,
+            model_path=model_path if signal_mode != "trend" else "trend-only",
+        )
+        return metrics
 
     if signal_mode == "trend":
         # Trend-only mode: no model predictions needed
@@ -274,6 +309,11 @@ def main():
     parser.add_argument("--trend-ext-break", type=float, default=0.05, help="Trend break line gradient")
     parser.add_argument("--trend-ext-limit", type=float, default=0.02, help="Trend limit line gradient")
     parser.add_argument("--trend-min-bars", type=int, default=5, help="Minimum bars for valid trend movement")
+    parser.add_argument("--position-size", type=float, default=1.0, help="Fraction of capital to allocate per trade (0-1, default 1.0 = all in)")
+    parser.add_argument("--stop-loss", type=float, default=None, help="Stop-loss percentage (e.g. 0.05 = 5%% loss closes position)")
+    parser.add_argument("--take-profit", type=float, default=None, help="Take-profit percentage (e.g. 0.10 = 10%% gain closes position)")
+    parser.add_argument("--walk-forward", action="store_true", help="Run walk-forward backtest (split into in-sample and out-of-sample)")
+    parser.add_argument("--train-ratio", type=float, default=0.7, help="Fraction of data for in-sample (walk-forward mode, default 0.7)")
 
     args = parser.parse_args()
 
@@ -299,6 +339,11 @@ def main():
         trend_ext_break=args.trend_ext_break,
         trend_ext_limit=args.trend_ext_limit,
         trend_min_bars=args.trend_min_bars,
+        position_size_pct=args.position_size,
+        stop_loss_pct=args.stop_loss,
+        take_profit_pct=args.take_profit,
+        walk_forward=args.walk_forward,
+        train_ratio=args.train_ratio,
     )
 
     if metrics:

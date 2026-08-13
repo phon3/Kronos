@@ -22,14 +22,20 @@ class CryptoBacktester:
         initial_capital: float = 100_000,
         threshold: float = 0.02,
         allow_short: bool = True,
-        fee_pct: float = 0.001,  # 0.1% per trade (typical exchange taker fee)
-        slippage_pct: float = 0.0005,  # 0.05% slippage
+        fee_pct: float = 0.001,
+        slippage_pct: float = 0.0005,
+        position_size_pct: float = 1.0,
+        stop_loss_pct: Optional[float] = None,
+        take_profit_pct: Optional[float] = None,
     ):
         self.initial_capital = initial_capital
         self.threshold = threshold
         self.allow_short = allow_short
         self.fee_pct = fee_pct
         self.slippage_pct = slippage_pct
+        self.position_size_pct = position_size_pct
+        self.stop_loss_pct = stop_loss_pct
+        self.take_profit_pct = take_profit_pct
 
     def generate_signals(self, predictions: pd.DataFrame, actual: pd.DataFrame) -> pd.DataFrame:
         """
@@ -171,14 +177,19 @@ class CryptoBacktester:
         """
         Execute backtest on signal DataFrame.
 
+        Supports position sizing (% of capital), stop-loss, and take-profit.
+        When stop_loss_pct or take_profit_pct is set, positions are closed
+        if the price moves against or in favor of the position by the
+        specified percentage, even if the signal hasn't reversed.
+
         Args:
             signals_df: Output from generate_signals()
 
         Returns:
             Tuple of (results_df, trades_list)
         """
-        capital = self.initial_capital  # Cash balance
-        position = 0.0  # Number of units (positive=long, negative=short)
+        capital = self.initial_capital
+        position = 0.0
         entry_price = 0.0
         trades = []
 
@@ -197,45 +208,64 @@ class CryptoBacktester:
 
             target_signal = int(row["position"])
 
-            # Close existing position when signal changes
-            if i > 0 and target_signal != prev_signal and position != 0:
-                exec_price = price * (1 + self.slippage_pct) if position > 0 else price * (1 - self.slippage_pct)
-                units = abs(position)
-                trade_value = units * exec_price
-                fee = trade_value * self.fee_pct
+            # Check stop-loss / take-profit before signal-based exit
+            if position != 0 and i > 0:
+                should_close = False
+                close_reason = "SIGNAL"
 
                 if position > 0:
-                    # Close long: sell units
-                    capital += trade_value - fee
+                    unrealized_pct = (price - entry_price) / entry_price
+                    if self.stop_loss_pct and unrealized_pct <= -self.stop_loss_pct:
+                        should_close = True
+                        close_reason = "STOP_LOSS"
+                    elif self.take_profit_pct and unrealized_pct >= self.take_profit_pct:
+                        should_close = True
+                        close_reason = "TAKE_PROFIT"
                 else:
-                    # Close short: buy back units
-                    capital -= trade_value + fee
+                    unrealized_pct = (entry_price - price) / entry_price
+                    if self.stop_loss_pct and unrealized_pct <= -self.stop_loss_pct:
+                        should_close = True
+                        close_reason = "STOP_LOSS"
+                    elif self.take_profit_pct and unrealized_pct >= self.take_profit_pct:
+                        should_close = True
+                        close_reason = "TAKE_PROFIT"
 
-                pnl = (exec_price - entry_price) * position - fee
-                trades.append({
-                    "timestamp": timestamp,
-                    "action": "CLOSE",
-                    "price": exec_price,
-                    "units": units,
-                    "side": "LONG" if position > 0 else "SHORT",
-                    "pnl": pnl,
-                    "capital": capital,
-                })
-                position = 0.0
+                if should_close or (target_signal != prev_signal):
+                    exec_price = price * (1 + self.slippage_pct) if position > 0 else price * (1 - self.slippage_pct)
+                    units = abs(position)
+                    trade_value = units * exec_price
+                    fee = trade_value * self.fee_pct
+
+                    if position > 0:
+                        capital += trade_value - fee
+                    else:
+                        capital -= trade_value + fee
+
+                    pnl = (exec_price - entry_price) * position - fee
+                    trades.append({
+                        "timestamp": timestamp,
+                        "action": "CLOSE",
+                        "price": exec_price,
+                        "units": units,
+                        "side": "LONG" if position > 0 else "SHORT",
+                        "pnl": pnl,
+                        "capital": capital,
+                        "reason": close_reason,
+                    })
+                    position = 0.0
 
             # Open new position when signal changes and we're flat
             if i > 0 and target_signal != 0 and position == 0:
                 side = 1 if target_signal > 0 else (-1 if self.allow_short else 0)
                 if side != 0 and capital > 0:
+                    alloc = capital * self.position_size_pct
                     exec_price = price * (1 + self.slippage_pct) if side > 0 else price * (1 - self.slippage_pct)
-                    units = capital / exec_price
-                    fee = capital * self.fee_pct
+                    units = alloc / exec_price
+                    fee = alloc * self.fee_pct
 
                     if side > 0:
-                        # Open long: buy units
                         capital -= units * exec_price + fee
                     else:
-                        # Open short: sell units
                         capital += units * exec_price - fee
 
                     position = units * side
@@ -249,6 +279,7 @@ class CryptoBacktester:
                         "side": "LONG" if side > 0 else "SHORT",
                         "pnl": 0.0,
                         "capital": capital,
+                        "reason": "SIGNAL",
                     })
                     prev_signal = target_signal
 
@@ -285,6 +316,7 @@ class CryptoBacktester:
                 "side": "LONG" if position > 0 else "SHORT",
                 "pnl": pnl,
                 "capital": capital,
+                "reason": "END",
             })
 
         return results, trades
@@ -421,6 +453,102 @@ class CryptoBacktester:
         plt.savefig(output_path, dpi=200, bbox_inches="tight")
         plt.close()
         print(f"Backtest chart saved to {output_path}")
+
+    def run_walk_forward(
+        self,
+        predictions: pd.DataFrame,
+        actual: pd.DataFrame,
+        full_data: pd.DataFrame,
+        train_ratio: float = 0.7,
+        output_dir: str = "./backtest_results/",
+        title: str = "Kronos Walk-Forward Backtest",
+        signal_mode: str = "kronos",
+        trend_prd: int = 60,
+        trend_ext_break: float = 0.05,
+        trend_ext_limit: float = 0.02,
+        trend_min_bars: int = 5,
+    ) -> dict:
+        """Run walk-forward backtest: train/tune on first portion, test on out-of-sample remainder.
+
+        Splits data chronologically — first `train_ratio` is in-sample, rest is out-of-sample.
+        Reports metrics for both periods separately.
+
+        Args:
+            predictions: Predicted close prices (aligned to actual)
+            actual: Actual close prices
+            full_data: Full OHLCV DataFrame with 'timestamps' column
+            train_ratio: Fraction of data for in-sample (default 0.7)
+            output_dir: Directory to save results
+            title: Chart title
+            signal_mode: 'kronos', 'trend', or 'combined'
+            trend_*: Trend detection parameters
+
+        Returns:
+            Dict with 'in_sample' and 'out_of_sample' metrics
+        """
+        n = len(actual)
+        split_idx = int(n * train_ratio)
+        split_date = actual.index[split_idx]
+
+        print(f"\nWalk-Forward Split: in-sample={n - (n - split_idx)} bars, out-of-sample={n - split_idx} bars")
+        print(f"Split date: {split_date}")
+
+        # In-sample
+        actual_is = actual.iloc[:split_idx]
+        actual_oos = actual.iloc[split_idx:]
+
+        if predictions is not None and len(predictions) > 0:
+            pred_is = predictions.loc[:split_date].iloc[:-1] if split_date in predictions.index else predictions[predictions.index < split_date]
+            pred_oos = predictions.loc[split_date:] if split_date in predictions.index else predictions[predictions.index >= split_date]
+        else:
+            pred_is = pd.DataFrame()
+            pred_oos = pd.DataFrame()
+
+        if full_data is not None:
+            full_is = full_data.iloc[:split_idx]
+            full_oos = full_data.iloc[split_idx:]
+        else:
+            full_is = None
+            full_oos = None
+
+        # Run in-sample
+        print("\n--- In-Sample ---")
+        is_dir = os.path.join(output_dir, "in_sample")
+        is_metrics = self.run(
+            predictions=pred_is, actual=actual_is, output_dir=is_dir,
+            title=f"{title} (In-Sample)", signal_mode=signal_mode,
+            full_data=full_is, trend_prd=trend_prd,
+            trend_ext_break=trend_ext_break, trend_ext_limit=trend_ext_limit,
+            trend_min_bars=trend_min_bars,
+        )
+
+        # Run out-of-sample
+        print("\n--- Out-of-Sample ---")
+        oos_dir = os.path.join(output_dir, "out_of_sample")
+        oos_metrics = self.run(
+            predictions=pred_oos, actual=actual_oos, output_dir=oos_dir,
+            title=f"{title} (Out-of-Sample)", signal_mode=signal_mode,
+            full_data=full_oos, trend_prd=trend_prd,
+            trend_ext_break=trend_ext_break, trend_ext_limit=trend_ext_limit,
+            trend_min_bars=trend_min_bars,
+        )
+
+        # Summary comparison
+        print("\n" + "=" * 60)
+        print(f"Walk-Forward Summary: {title}")
+        print("=" * 60)
+        print(f"{'Metric':<20} {'In-Sample':>15} {'Out-of-Sample':>15}")
+        print("-" * 52)
+        for key in ["total_return", "annual_return", "sharpe_ratio", "max_drawdown", "win_rate", "total_trades"]:
+            is_val = is_metrics.get(key, 0)
+            oos_val = oos_metrics.get(key, 0)
+            if isinstance(is_val, float) and ("return" in key or "rate" in key or "drawdown" in key):
+                print(f"  {key:<18} {is_val:>14.2%} {oos_val:>14.2%}")
+            else:
+                print(f"  {key:<18} {is_val:>15} {oos_val:>15}")
+        print("=" * 60)
+
+        return {"in_sample": is_metrics, "out_of_sample": oos_metrics, "split_date": str(split_date)}
 
     def run(
         self,
