@@ -672,7 +672,10 @@ async function runBacktest() {
         }
     } catch (e) {
         showLoading('bt-loading', false);
-        showStatus('bt-status', 'error', e.response?.data?.error || e.message);
+        const errMsg = e.response?.data?.error || e.message;
+        const tb = e.response?.data?.traceback || '';
+        showStatus('bt-status', 'error', errMsg);
+        if (tb) console.error('Backtest traceback:', tb);
     } finally {
         btn.disabled = false;
     }

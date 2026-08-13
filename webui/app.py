@@ -767,6 +767,8 @@ def run_backtest():
             'stop_loss_pct': float(data.get('stop_loss')) if data.get('stop_loss') else None,
             'take_profit_pct': float(data.get('take_profit')) if data.get('take_profit') else None,
             'loss_multiplier': float(data.get('loss_multiplier', 1.0)),
+            'max_position_multiplier': float(data.get('max_position_mult', 4.0)),
+            'reset_on_win': data.get('reset_on_win', True),
             'walk_forward': data.get('walk_forward', False),
             'train_ratio': float(data.get('train_ratio', 0.7)),
         }
@@ -822,9 +824,31 @@ def run_backtest():
         
         # Import and run backtest
         from backtest.backtest_runner import run_backtest as run_bt
-        metrics = run_bt(**bt_kwargs)
+        import io
+        import contextlib
+
+        # Capture stdout for progress logging
+        captured = io.StringIO()
+        with contextlib.redirect_stdout(captured):
+            metrics = run_bt(**bt_kwargs)
+        
+        # Print captured output to server console
+        print(captured.getvalue())
         
         if metrics:
+            # Serialize numpy types for JSON
+            def serialize(obj):
+                if isinstance(obj, dict):
+                    return {k: serialize(v) for k, v in obj.items()}
+                elif isinstance(obj, (list, tuple)):
+                    return [serialize(v) for v in obj]
+                elif hasattr(obj, 'item'):
+                    return obj.item()
+                else:
+                    return obj
+            
+            metrics = serialize(metrics)
+            
             return jsonify({
                 'success': True,
                 'metrics': metrics,
@@ -834,7 +858,10 @@ def run_backtest():
             return jsonify({'error': 'Backtest returned no metrics'}), 500
         
     except Exception as e:
-        return jsonify({'error': f'Backtest failed: {str(e)}'}), 500
+        import traceback
+        tb = traceback.format_exc()
+        print(f"[BACKTEST ERROR] {tb}")
+        return jsonify({'error': f'Backtest failed: {str(e)}', 'traceback': tb}), 500
 
 if __name__ == '__main__':
     print("Starting Kronos Web UI...")
