@@ -48,9 +48,7 @@ Desktop.ini
 *.parquet
 *.h5
 *.hdf5
-# Exclude large CSVs but keep candle data (small, needed for training)
-data/*.csv
-!data/BTC_USD_*.csv
+# data/ folder is for candle CSVs only — track them in git
 
 # Model files (large files)
 *.pth
