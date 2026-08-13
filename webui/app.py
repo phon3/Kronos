@@ -756,6 +756,8 @@ def run_backtest():
         
         # Build kwargs for run_backtest
         bt_kwargs = {
+            'model_path': '',
+            'tokenizer_path': '',
             'data_path': data_path,
             'signal_mode': signal_mode,
             'output_dir': data.get('output_dir', './backtest_results/webui/'),
