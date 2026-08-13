@@ -30,6 +30,8 @@ class CryptoBacktester:
         loss_multiplier: float = 1.0,
         max_position_multiplier: float = 4.0,
         reset_on_win: bool = True,
+        take_profit_levels: Optional[list] = None,
+        daily_loss_limit_pct: Optional[float] = None,
     ):
         self.initial_capital = initial_capital
         self.threshold = threshold
@@ -42,6 +44,8 @@ class CryptoBacktester:
         self.loss_multiplier = loss_multiplier
         self.max_position_multiplier = max_position_multiplier
         self.reset_on_win = reset_on_win
+        self.take_profit_levels = take_profit_levels
+        self.daily_loss_limit_pct = daily_loss_limit_pct
 
     def generate_signals(self, predictions: pd.DataFrame, actual: pd.DataFrame) -> pd.DataFrame:
         """
@@ -254,12 +258,20 @@ class CryptoBacktester:
         """
         Execute backtest on signal DataFrame.
 
-        Supports position sizing (% of capital), stop-loss, take-profit,
-        and martingale-style loss escalation.
+        Supports:
+        - Position sizing (% of capital)
+        - Stop-loss (single level, closes entire position)
+        - Take-profit (single level, closes entire position)
+        - Multi-target scaling (TP1/TP2/TP3 with partial exits)
+        - Martingale-style loss escalation
+        - Daily loss limit (stop entering new trades after X% daily drawdown)
 
-        When loss_multiplier > 1.0, position size increases by that factor
-        after each consecutive losing trade, up to max_position_multiplier.
-        If reset_on_win is True, size resets to base after any winning trade.
+        Multi-target scaling: when take_profit_levels is set, the position is
+        partially closed at each target level. Each level is (pct_gain, fraction_to_close).
+        E.g. [(0.05, 0.33), (0.10, 0.33), (0.15, 0.34)] closes 33% at +5%, 33% at +10%, 34% at +15%.
+
+        Daily loss limit: when daily_loss_limit_pct is set, no new positions are opened
+        for the rest of the day if cumulative daily losses exceed the limit. Resets each day.
 
         Args:
             signals_df: Output from generate_signals()
@@ -272,6 +284,15 @@ class CryptoBacktester:
         entry_price = 0.0
         trades = []
         consecutive_losses = 0
+
+        # Multi-target scaling state
+        tp_hit = [False] * (len(self.take_profit_levels) if self.take_profit_levels else 0)
+        original_units = 0.0
+
+        # Daily loss limit state
+        current_day = None
+        day_start_capital = self.initial_capital
+        daily_halt = False
 
         results = pd.DataFrame(index=signals_df.index)
         results["capital"] = 0.0
@@ -288,16 +309,39 @@ class CryptoBacktester:
 
             target_signal = int(row["position"])
 
-            # Check stop-loss / take-profit before signal-based exit
+            # Daily loss limit check — reset at day boundary
+            if self.daily_loss_limit_pct is not None:
+                bar_day = timestamp.date() if hasattr(timestamp, 'date') else timestamp
+                if bar_day != current_day:
+                    current_day = bar_day
+                    day_start_capital = capital + position * price
+                    daily_halt = False
+
+            # Check stop-loss / take-profit / multi-target before signal-based exit
             if position != 0 and i > 0:
                 should_close = False
                 close_reason = "SIGNAL"
+                partial_close_units = 0.0
+                partial_reason = ""
 
                 if position > 0:
                     unrealized_pct = (price - entry_price) / entry_price
+                    # Stop-loss: close entire remaining position
                     if self.stop_loss_pct and unrealized_pct <= -self.stop_loss_pct:
                         should_close = True
                         close_reason = "STOP_LOSS"
+                    # Multi-target scaling: partial exits
+                    elif self.take_profit_levels:
+                        for j, (tp_pct, tp_frac) in enumerate(self.take_profit_levels):
+                            if not tp_hit[j] and unrealized_pct >= tp_pct:
+                                tp_hit[j] = True
+                                close_units = original_units * tp_frac
+                                if close_units > abs(position):
+                                    close_units = abs(position)
+                                partial_close_units = close_units
+                                partial_reason = f"TP{j+1}"
+                                break
+                    # Single take-profit: close entire position
                     elif self.take_profit_pct and unrealized_pct >= self.take_profit_pct:
                         should_close = True
                         close_reason = "TAKE_PROFIT"
@@ -306,11 +350,58 @@ class CryptoBacktester:
                     if self.stop_loss_pct and unrealized_pct <= -self.stop_loss_pct:
                         should_close = True
                         close_reason = "STOP_LOSS"
+                    elif self.take_profit_levels:
+                        for j, (tp_pct, tp_frac) in enumerate(self.take_profit_levels):
+                            if not tp_hit[j] and unrealized_pct >= tp_pct:
+                                tp_hit[j] = True
+                                close_units = original_units * tp_frac
+                                if close_units > abs(position):
+                                    close_units = abs(position)
+                                partial_close_units = close_units
+                                partial_reason = f"TP{j+1}"
+                                break
                     elif self.take_profit_pct and unrealized_pct >= self.take_profit_pct:
                         should_close = True
                         close_reason = "TAKE_PROFIT"
 
-                if should_close or (target_signal != prev_signal):
+                # Handle partial close (multi-target)
+                if partial_close_units > 0 and not should_close:
+                    exec_price = price * (1 + self.slippage_pct) if position > 0 else price * (1 - self.slippage_pct)
+                    trade_value = partial_close_units * exec_price
+                    fee = trade_value * self.fee_pct
+
+                    if position > 0:
+                        capital += trade_value - fee
+                    else:
+                        capital -= trade_value + fee
+
+                    partial_pnl = (exec_price - entry_price) * (partial_close_units if position > 0 else -partial_close_units) - fee
+                    remaining = abs(position) - partial_close_units
+
+                    trades.append({
+                        "timestamp": timestamp,
+                        "action": "PARTIAL_CLOSE",
+                        "price": exec_price,
+                        "units": partial_close_units,
+                        "side": "LONG" if position > 0 else "SHORT",
+                        "pnl": partial_pnl,
+                        "capital": capital,
+                        "reason": partial_reason,
+                        "consecutive_losses": consecutive_losses,
+                        "remaining_units": remaining,
+                    })
+
+                    # Update position to remaining
+                    if position > 0:
+                        position = remaining
+                    else:
+                        position = -remaining
+
+                    if remaining <= 0:
+                        position = 0.0
+
+                # Full close (signal change, stop-loss, or single take-profit)
+                if should_close or (target_signal != prev_signal and position != 0):
                     exec_price = price * (1 + self.slippage_pct) if position > 0 else price * (1 - self.slippage_pct)
                     units = abs(position)
                     trade_value = units * exec_price
@@ -342,41 +433,54 @@ class CryptoBacktester:
                     })
                     position = 0.0
 
+            # Daily loss limit: check if we should halt new entries
+            if self.daily_loss_limit_pct is not None and not daily_halt:
+                current_value = capital + position * price
+                daily_pnl_pct = (current_value - day_start_capital) / day_start_capital if day_start_capital > 0 else 0
+                if daily_pnl_pct <= -self.daily_loss_limit_pct:
+                    daily_halt = True
+
             # Open new position when signal changes and we're flat
             if i > 0 and target_signal != 0 and position == 0:
-                side = 1 if target_signal > 0 else (-1 if self.allow_short else 0)
-                if side != 0 and capital > 0:
-                    # Martingale: scale position size by loss_multiplier^consecutive_losses
-                    size_mult = min(
-                        self.loss_multiplier ** consecutive_losses,
-                        self.max_position_multiplier,
-                    ) if self.loss_multiplier > 1.0 else 1.0
-                    alloc = capital * self.position_size_pct * size_mult
-                    exec_price = price * (1 + self.slippage_pct) if side > 0 else price * (1 - self.slippage_pct)
-                    units = alloc / exec_price
-                    fee = alloc * self.fee_pct
+                # Skip if daily loss limit hit
+                if daily_halt:
+                    prev_signal = 0
+                else:
+                    side = 1 if target_signal > 0 else (-1 if self.allow_short else 0)
+                    if side != 0 and capital > 0:
+                        # Martingale: scale position size by loss_multiplier^consecutive_losses
+                        size_mult = min(
+                            self.loss_multiplier ** consecutive_losses,
+                            self.max_position_multiplier,
+                        ) if self.loss_multiplier > 1.0 else 1.0
+                        alloc = capital * self.position_size_pct * size_mult
+                        exec_price = price * (1 + self.slippage_pct) if side > 0 else price * (1 - self.slippage_pct)
+                        units = alloc / exec_price
+                        fee = alloc * self.fee_pct
 
-                    if side > 0:
-                        capital -= units * exec_price + fee
-                    else:
-                        capital += units * exec_price - fee
+                        if side > 0:
+                            capital -= units * exec_price + fee
+                        else:
+                            capital += units * exec_price - fee
 
-                    position = units * side
-                    entry_price = exec_price
+                        position = units * side
+                        entry_price = exec_price
+                        original_units = units
+                        tp_hit = [False] * (len(self.take_profit_levels) if self.take_profit_levels else 0)
 
-                    trades.append({
-                        "timestamp": timestamp,
-                        "action": "OPEN",
-                        "price": exec_price,
-                        "units": units,
-                        "side": "LONG" if side > 0 else "SHORT",
-                        "pnl": 0.0,
-                        "capital": capital,
-                        "reason": "SIGNAL",
-                        "consecutive_losses": consecutive_losses,
-                        "size_multiplier": size_mult,
-                    })
-                    prev_signal = target_signal
+                        trades.append({
+                            "timestamp": timestamp,
+                            "action": "OPEN",
+                            "price": exec_price,
+                            "units": units,
+                            "side": "LONG" if side > 0 else "SHORT",
+                            "pnl": 0.0,
+                            "capital": capital,
+                            "reason": "SIGNAL",
+                            "consecutive_losses": consecutive_losses,
+                            "size_multiplier": size_mult,
+                        })
+                        prev_signal = target_signal
 
             # Mark-to-market
             portfolio_value = capital + position * price
@@ -447,8 +551,8 @@ class CryptoBacktester:
         drawdown = (cumulative - peak) / peak
         max_drawdown = drawdown.min()
 
-        # Trade statistics
-        close_trades = [t for t in trades if t["action"] == "CLOSE"]
+        # Trade statistics — include both CLOSE and PARTIAL_CLOSE
+        close_trades = [t for t in trades if t["action"] in ("CLOSE", "PARTIAL_CLOSE")]
         profitable = [t for t in close_trades if t["pnl"] > 0]
         win_rate = len(profitable) / len(close_trades) if close_trades else 0
 

@@ -162,6 +162,8 @@ def run_backtest(
     macro_ext_break: float = 0.03,
     macro_ext_limit: float = 0.03,
     macro_min_bars: int = 3,
+    take_profit_levels: Optional[list] = None,
+    daily_loss_limit_pct: Optional[float] = None,
 ) -> dict:
     """
     Full backtest pipeline: load model, generate predictions, run backtest, generate report.
@@ -228,6 +230,8 @@ def run_backtest(
         loss_multiplier=loss_multiplier,
         max_position_multiplier=max_position_multiplier,
         reset_on_win=reset_on_win,
+        take_profit_levels=take_profit_levels,
+        daily_loss_limit_pct=daily_loss_limit_pct,
     )
 
     if walk_forward and signal_mode != "multi_tf":
@@ -464,6 +468,10 @@ def main():
     parser.add_argument("--macro-ext-break", type=float, default=0.03, help="Macro timeframe break gradient")
     parser.add_argument("--macro-ext-limit", type=float, default=0.03, help="Macro timeframe limit gradient")
     parser.add_argument("--macro-min-bars", type=int, default=3, help="Macro timeframe min bars")
+    # Multi-target scaling (DeepTrade TP1/TP2/TP3)
+    parser.add_argument("--tp-levels", default=None, help="Multi-target take-profit levels as 'pct:frac,pct:frac,...' e.g. '0.05:0.33,0.10:0.33,0.15:0.34' closes 33%% at +5%%, 33%% at +10%%, 34%% at +15%%")
+    # Daily loss limit (DeepTrade risk management)
+    parser.add_argument("--daily-loss-limit", type=float, default=None, help="Stop entering new trades after this daily loss %% (e.g. 0.03 = 3%%). Resets each day.")
 
     args = parser.parse_args()
 
@@ -472,6 +480,15 @@ def main():
 
     if args.signal_mode == "multi_tf" and not args.macro_data:
         parser.error("--macro-data is required when --signal-mode is multi_tf")
+
+    # Parse multi-target TP levels
+    tp_levels = None
+    if args.tp_levels:
+        parts = args.tp_levels.split(",")
+        tp_levels = []
+        for part in parts:
+            pct_str, frac_str = part.strip().split(":")
+            tp_levels.append((float(pct_str), float(frac_str)))
 
     metrics = run_backtest(
         model_path=args.model or "",
@@ -505,6 +522,8 @@ def main():
         macro_ext_break=args.macro_ext_break,
         macro_ext_limit=args.macro_ext_limit,
         macro_min_bars=args.macro_min_bars,
+        take_profit_levels=tp_levels,
+        daily_loss_limit_pct=args.daily_loss_limit,
     )
 
     if metrics:
