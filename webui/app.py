@@ -37,7 +37,8 @@ AVAILABLE_MODELS = {
         'tokenizer_id': 'NeoQuasar/Kronos-Tokenizer-2k',
         'context_length': 2048,
         'params': '4.1M',
-        'description': 'Lightweight model, suitable for fast prediction'
+        'description': 'Lightweight model, suitable for fast prediction',
+        'type': 'pretrained'
     },
     'kronos-small': {
         'name': 'Kronos-small',
@@ -45,7 +46,8 @@ AVAILABLE_MODELS = {
         'tokenizer_id': 'NeoQuasar/Kronos-Tokenizer-base',
         'context_length': 512,
         'params': '24.7M',
-        'description': 'Small model, balanced performance and speed'
+        'description': 'Small model, balanced performance and speed',
+        'type': 'pretrained'
     },
     'kronos-base': {
         'name': 'Kronos-base',
@@ -53,9 +55,40 @@ AVAILABLE_MODELS = {
         'tokenizer_id': 'NeoQuasar/Kronos-Tokenizer-base',
         'context_length': 512,
         'params': '102.3M',
-        'description': 'Base model, provides better prediction quality'
+        'description': 'Base model, provides better prediction quality',
+        'type': 'pretrained'
     }
 }
+
+def scan_finetuned_models():
+    """Scan finetune_csv/finetuned/ directory for locally fine-tuned models"""
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    finetuned_dir = os.path.join(project_root, 'finetune_csv', 'finetuned')
+    models = {}
+    
+    if not os.path.exists(finetuned_dir):
+        return models
+    
+    for name in os.listdir(finetuned_dir):
+        model_dir = os.path.join(finetuned_dir, name)
+        if not os.path.isdir(model_dir):
+            continue
+        
+        tokenizer_path = os.path.join(model_dir, 'tokenizer', 'best_model')
+        basemodel_path = os.path.join(model_dir, 'basemodel', 'best_model')
+        
+        if os.path.exists(tokenizer_path) and os.path.exists(basemodel_path):
+            models[f'finetuned-{name}'] = {
+                'name': f'Fine-tuned: {name}',
+                'model_path': basemodel_path,
+                'tokenizer_path': tokenizer_path,
+                'context_length': 512,
+                'params': '24.7M',
+                'description': f'Locally fine-tuned model: {name}',
+                'type': 'finetuned'
+            }
+    
+    return models
 
 def load_data_files():
     """Scan data directory and return available data files"""
@@ -636,14 +669,22 @@ def load_model():
         model_key = data.get('model_key', 'kronos-small')
         device = data.get('device', 'cpu')
         
-        if model_key not in AVAILABLE_MODELS:
+        # Merge pretrained + finetuned models
+        all_models = {**AVAILABLE_MODELS, **scan_finetuned_models()}
+        
+        if model_key not in all_models:
             return jsonify({'error': f'Unsupported model: {model_key}'}), 400
         
-        model_config = AVAILABLE_MODELS[model_key]
+        model_config = all_models[model_key]
         
-        # Load tokenizer and model
-        tokenizer = KronosTokenizer.from_pretrained(model_config['tokenizer_id'])
-        model = Kronos.from_pretrained(model_config['model_id'])
+        if model_config.get('type') == 'finetuned':
+            # Load from local paths
+            tokenizer = KronosTokenizer.from_pretrained(model_config['tokenizer_path'])
+            model = Kronos.from_pretrained(model_config['model_path'])
+        else:
+            # Load from HuggingFace
+            tokenizer = KronosTokenizer.from_pretrained(model_config['tokenizer_id'])
+            model = Kronos.from_pretrained(model_config['model_id'])
         
         # Create predictor
         predictor = KronosPredictor(model, tokenizer, device=device, max_context=model_config['context_length'])
@@ -655,7 +696,8 @@ def load_model():
                 'name': model_config['name'],
                 'params': model_config['params'],
                 'context_length': model_config['context_length'],
-                'description': model_config['description']
+                'description': model_config['description'],
+                'type': model_config.get('type', 'pretrained')
             }
         })
         
@@ -665,8 +707,10 @@ def load_model():
 @app.route('/api/available-models')
 def get_available_models():
     """Get available model list"""
+    finetuned = scan_finetuned_models()
+    all_models = {**AVAILABLE_MODELS, **finetuned}
     return jsonify({
-        'models': AVAILABLE_MODELS,
+        'models': all_models,
         'model_available': MODEL_AVAILABLE
     })
 
@@ -696,6 +740,99 @@ def get_model_status():
             'loaded': False,
             'message': 'Kronos model library not available, please install related dependencies'
         })
+
+@app.route('/api/backtest', methods=['POST'])
+def run_backtest():
+    """Run backtest with given parameters"""
+    try:
+        data = request.get_json()
+        
+        # Required params
+        data_path = data.get('data_path')
+        signal_mode = data.get('signal_mode', 'trend')
+        
+        if not data_path:
+            return jsonify({'error': 'data_path is required'}), 400
+        
+        # Build kwargs for run_backtest
+        bt_kwargs = {
+            'data_path': data_path,
+            'signal_mode': signal_mode,
+            'output_dir': data.get('output_dir', './backtest_results/webui/'),
+            'device': data.get('device', 'cpu'),
+            'initial_capital': float(data.get('initial_capital', 100000)),
+            'position_size_pct': float(data.get('position_size', 0.25)),
+            'stop_loss_pct': float(data.get('stop_loss')) if data.get('stop_loss') else None,
+            'take_profit_pct': float(data.get('take_profit')) if data.get('take_profit') else None,
+            'loss_multiplier': float(data.get('loss_multiplier', 1.0)),
+            'walk_forward': data.get('walk_forward', False),
+            'train_ratio': float(data.get('train_ratio', 0.7)),
+        }
+        
+        # Trend params
+        if signal_mode in ('trend', 'combined'):
+            bt_kwargs['trend_prd'] = int(data.get('trend_prd', 60))
+            bt_kwargs['trend_ext_break'] = float(data.get('trend_ext_break', 0.03))
+            bt_kwargs['trend_ext_limit'] = float(data.get('trend_ext_limit', 0.01))
+            bt_kwargs['trend_min_bars'] = int(data.get('trend_min_bars', 5))
+        
+        # Multi-timeframe params
+        if signal_mode == 'multi_tf':
+            macro_path = data.get('macro_data_path')
+            if not macro_path:
+                return jsonify({'error': 'macro_data_path required for multi_tf mode'}), 400
+            bt_kwargs['macro_data_path'] = macro_path
+            bt_kwargs['macro_prd'] = int(data.get('macro_prd', 10))
+            bt_kwargs['macro_ext_break'] = float(data.get('macro_ext_break', 0.03))
+            bt_kwargs['macro_ext_limit'] = float(data.get('macro_ext_limit', 0.03))
+            bt_kwargs['macro_min_bars'] = int(data.get('macro_min_bars', 3))
+        
+        # Model params (for kronos/combined modes)
+        if signal_mode in ('kronos', 'combined'):
+            model_key = data.get('model_key')
+            if not model_key:
+                return jsonify({'error': 'model_key required for kronos/combined mode'}), 400
+            all_models = {**AVAILABLE_MODELS, **scan_finetuned_models()}
+            if model_key not in all_models:
+                return jsonify({'error': f'Unknown model: {model_key}'}), 400
+            mc = all_models[model_key]
+            if mc.get('type') == 'finetuned':
+                bt_kwargs['model_path'] = mc['model_path']
+                bt_kwargs['tokenizer_path'] = mc['tokenizer_path']
+            else:
+                bt_kwargs['model_path'] = mc['model_id']
+                bt_kwargs['tokenizer_path'] = mc['tokenizer_id']
+        
+        # DeepTrade: multi-target TP levels
+        tp_levels_str = data.get('tp_levels')
+        if tp_levels_str:
+            parts = tp_levels_str.split(',')
+            tp_levels = []
+            for part in parts:
+                pct_str, frac_str = part.strip().split(':')
+                tp_levels.append((float(pct_str), float(frac_str)))
+            bt_kwargs['take_profit_levels'] = tp_levels
+        
+        # DeepTrade: daily loss limit
+        daily_limit = data.get('daily_loss_limit')
+        if daily_limit:
+            bt_kwargs['daily_loss_limit_pct'] = float(daily_limit)
+        
+        # Import and run backtest
+        from backtest.backtest_runner import run_backtest as run_bt
+        metrics = run_bt(**bt_kwargs)
+        
+        if metrics:
+            return jsonify({
+                'success': True,
+                'metrics': metrics,
+                'message': 'Backtest completed successfully'
+            })
+        else:
+            return jsonify({'error': 'Backtest returned no metrics'}), 500
+        
+    except Exception as e:
+        return jsonify({'error': f'Backtest failed: {str(e)}'}), 500
 
 if __name__ == '__main__':
     print("Starting Kronos Web UI...")
