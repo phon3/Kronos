@@ -1,0 +1,63 @@
+# Fine-tune Kronos-small on BTC/USD 15m candles from Coinbase
+# 15m data has ~4x more bars than 1h, so we use shorter lookback and prediction windows
+#
+# Data: python -m data_ingestion.fetch_data --source coinbase --symbol BTC/USD --timeframe 15m --start 2024-01-01 --end 2025-08-01 --out ./data/BTC_USD_15m.csv
+#
+# Key differences from 1h config:
+# - Shorter lookback (256 = ~2.7 days of 15m bars) to keep batch memory manageable
+# - Shorter pred_len (24 = 6 hours ahead) — appropriate for 15m granularity
+# - Larger train_ratio (0.90) since we have 91K rows
+# - Same kronos-small model for consistency across timeframes
+
+data:
+  data_path: "./data/BTC_USD_15m.csv"
+  lookback_window: 256
+  predict_window: 24
+  max_context: 512
+  clip: 5.0
+  train_ratio: 0.90
+  val_ratio: 0.07
+  test_ratio: 0.03
+
+training:
+  tokenizer_epochs: 30
+  basemodel_epochs: 25
+  batch_size: 64
+  log_interval: 50
+  num_workers: 4
+  seed: 42
+
+  tokenizer_learning_rate: 0.0001
+  predictor_learning_rate: 0.000002
+
+  adam_beta1: 0.9
+  adam_beta2: 0.95
+  adam_weight_decay: 0.1
+
+  accumulation_steps: 2
+
+model_paths:
+  pretrained_tokenizer: "NeoQuasar/Kronos-Tokenizer-base"
+  pretrained_predictor: "NeoQuasar/Kronos-small"
+
+  exp_name: "btc_usd_15m_prod"
+  base_path: "./finetune_csv/finetuned/"
+
+  base_save_path: ""
+  finetuned_tokenizer: ""
+
+  tokenizer_save_name: "tokenizer"
+  basemodel_save_name: "basemodel"
+
+experiment:
+  name: "btc_usd_15m_finetune_prod"
+  description: "BTC/USD 15m production fine-tuning — kronos-small"
+  use_comet: false
+
+  train_tokenizer: true
+  train_basemodel: true
+  skip_existing: false
+
+device:
+  use_cuda: true
+  device_id: 0

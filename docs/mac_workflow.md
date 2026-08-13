@@ -84,18 +84,29 @@ python -c "from model import Kronos, KronosTokenizer; print('Downloading kronos-
 
 ## Step 2: Fetch & Validate Data
 
-### 2.1 Fetch BTC/USD 1h from Coinbase
+### 2.1 Fetch BTC/USD data from Coinbase (all timeframes)
 
 ```bash
+# 1h candles (primary timeframe)
 python -m data_ingestion.fetch_data \
-  --source coinbase \
-  --symbol BTC/USD \
-  --timeframe 1h \
-  --start 2024-01-01 \
-  --end 2025-08-01 \
-  --out ./data/BTC_USD_1h.csv \
-  --validate
+  --source coinbase --symbol BTC/USD --timeframe 1h \
+  --start 2024-01-01 --end 2025-08-01 \
+  --out ./data/BTC_USD_1h.csv --validate
+
+# 15m candles (higher frequency, ~91K rows)
+python -m data_ingestion.fetch_data \
+  --source coinbase --symbol BTC/USD --timeframe 15m \
+  --start 2024-01-01 --end 2025-08-01 \
+  --out ./data/BTC_USD_15m.csv --validate
+
+# 1d candles (macro trend, ~2.4K rows)
+python -m data_ingestion.fetch_data \
+  --source coinbase --symbol BTC/USD --timeframe 1d \
+  --start 2020-01-01 --end 2025-08-01 \
+  --out ./data/BTC_USD_1d.csv --validate
 ```
+
+> **Note**: CSV files in `data/` are gitignored (too large for git). Fetch them locally on each machine.
 
 ### 2.2 Fetch NASDAQ data (Phase 2)
 
@@ -124,13 +135,10 @@ if report['errors']:
 "
 ```
 
-### 2.4 Commit data to GitHub
+### 2.4 Data files are gitignored
 
-```bash
-git add data/BTC_USD_1h.csv
-git commit -m "Add BTC/USD 1h data from Coinbase"
-git push origin master
-```
+CSV files in `data/` are too large for git. Fetch them on each machine using the commands in 2.1.
+Configs and code are committed normally.
 
 ---
 
@@ -138,17 +146,52 @@ git push origin master
 
 ### 3.1 Trend-only backtest (no model, instant)
 
-This uses the ported trend detection algorithm — no model download, no GPU needed:
+This uses the ported trend detection algorithm — no model download, no GPU needed.
+Best params from param sweep: `prd=60, ext_break=0.03, ext_limit=0.01, min_bars=5` for 1h.
 
 ```bash
 python -m backtest.backtest_runner \
   --data ./data/BTC_USD_1h.csv \
   --signal-mode trend \
   --trend-prd 60 \
-  --trend-ext-break 0.05 \
-  --trend-ext-limit 0.02 \
+  --trend-ext-break 0.03 \
+  --trend-ext-limit 0.01 \
   --trend-min-bars 5 \
+  --position-size 0.25 \
+  --stop-loss 0.08 \
   --output ./backtest_results/btc_trend/
+```
+
+### 3.1b Walk-forward backtest with martingale position sizing
+
+Splits data chronologically (70% in-sample, 30% out-of-sample) and applies
+martingale-style loss escalation (1.5x after each loss, capped at 4x):
+
+```bash
+python -m backtest.backtest_runner \
+  --data ./data/BTC_USD_1h.csv \
+  --signal-mode trend \
+  --trend-prd 60 --trend-ext-break 0.03 --trend-ext-limit 0.01 --trend-min-bars 5 \
+  --position-size 0.25 --stop-loss 0.08 \
+  --loss-multiplier 1.5 --max-position-mult 4.0 \
+  --walk-forward --train-ratio 0.7 \
+  --output ./backtest_results/btc_1h_martingale/
+```
+
+### 3.1c Multi-timeframe backtest (1d macro filter + 1h entries)
+
+Uses daily trend as a directional filter — only takes 1h positions when 1d trend agrees:
+
+```bash
+python -m backtest.backtest_runner \
+  --data ./data/BTC_USD_1h.csv \
+  --signal-mode multi_tf \
+  --macro-data ./data/BTC_USD_1d.csv \
+  --trend-prd 60 --trend-ext-break 0.03 --trend-ext-limit 0.01 --trend-min-bars 5 \
+  --macro-prd 10 --macro-ext-break 0.03 --macro-ext-limit 0.03 --macro-min-bars 3 \
+  --position-size 0.25 --stop-loss 0.08 \
+  --walk-forward \
+  --output ./backtest_results/btc_multi_tf_1d_1h/
 ```
 
 Open the report:
@@ -207,13 +250,46 @@ backtest_results/btc_trend/
 └── trade_log.csv             # Individual trade entries/exits with PnL
 ```
 
-### 3.6 Compare all three modes
+### 3.6 Parameter sweep (find best trend params)
 
-Run all three and compare metrics:
+Grid-search trend detection parameters with out-of-sample evaluation:
+
+```bash
+# 1h sweep
+python -m backtest.param_sweep \
+  --data ./data/BTC_USD_1h.csv \
+  --output ./backtest_results/param_sweep_1h/ \
+  --prd 30,60,90,120 --ext-break 0.03,0.05,0.08 --ext-limit 0.01,0.02,0.03 --min-bars 3,5,10 \
+  --position-size 0.25 --stop-loss 0.08
+
+# 15m sweep (wider prd range for higher granularity)
+python -m backtest.param_sweep \
+  --data ./data/BTC_USD_15m.csv \
+  --output ./backtest_results/param_sweep_15m/ \
+  --prd 60,120,240,480 --ext-break 0.03,0.05,0.08 --ext-limit 0.01,0.02,0.03 --min-bars 3,5,10 \
+  --position-size 0.25 --stop-loss 0.08
+
+# 1d sweep (shorter prd for daily bars)
+python -m backtest.param_sweep \
+  --data ./data/BTC_USD_1d.csv \
+  --output ./backtest_results/param_sweep_1d/ \
+  --prd 10,20,30,60 --ext-break 0.03,0.05,0.08,0.10 --ext-limit 0.01,0.02,0.03 --min-bars 3,5,10 \
+  --position-size 0.25 --stop-loss 0.08
+```
+
+### 3.7 Best params found (from sweep results)
+
+| Timeframe | prd | ext_break | ext_limit | min_bars | OOS Return | Sharpe | Win Rate |
+|-----------|-----|-----------|-----------|----------|------------|--------|----------|
+| 15m       | 240 | 0.03      | 0.01      | 3        | 137.2%     | 17.85  | 100%     |
+| 1h        | 60  | 0.03      | 0.01      | 5        | 64.6%      | 16.19  | 100%     |
+| 1d        | 10  | 0.03      | 0.03      | 3        | 171.1%     | 5.97   | 90%      |
+
+### 3.8 Compare all modes
 
 ```bash
 # Trend-only
-python -m backtest.backtest_runner --data ./data/BTC_USD_1h.csv --signal-mode trend --output ./backtest_results/btc_trend/
+python -m backtest.backtest_runner --data ./data/BTC_USD_1h.csv --signal-mode trend --trend-prd 60 --trend-ext-break 0.03 --trend-ext-limit 0.01 --trend-min-bars 5 --output ./backtest_results/btc_trend/
 
 # Kronos-only (requires model)
 python -m backtest.backtest_runner --model ./finetune_csv/finetuned/btc_usd_1h_dev/basemodel/best_model --tokenizer ./finetune_csv/finetuned/btc_usd_1h_dev/tokenizer/best_model --data ./data/BTC_USD_1h.csv --device mps --signal-mode kronos --output ./backtest_results/btc_kronos/
@@ -221,10 +297,14 @@ python -m backtest.backtest_runner --model ./finetune_csv/finetuned/btc_usd_1h_d
 # Combined
 python -m backtest.backtest_runner --model ./finetune_csv/finetuned/btc_usd_1h_dev/basemodel/best_model --tokenizer ./finetune_csv/finetuned/btc_usd_1h_dev/tokenizer/best_model --data ./data/BTC_USD_1h.csv --device mps --signal-mode combined --output ./backtest_results/btc_combined/
 
+# Multi-timeframe (1d filter + 1h entries)
+python -m backtest.backtest_runner --data ./data/BTC_USD_1h.csv --signal-mode multi_tf --macro-data ./data/BTC_USD_1d.csv --trend-prd 60 --trend-ext-break 0.03 --trend-ext-limit 0.01 --trend-min-bars 5 --macro-prd 10 --macro-ext-break 0.03 --macro-ext-limit 0.03 --macro-min-bars 3 --output ./backtest_results/btc_multi_tf_1d_1h/
+
 # Open all reports
 open backtest_results/btc_trend/backtest_report.html
 open backtest_results/btc_kronos/backtest_report.html
 open backtest_results/btc_combined/backtest_report.html
+open backtest_results/btc_multi_tf_1d_1h/backtest_report.html
 ```
 
 ---
@@ -393,22 +473,24 @@ source venv/bin/activate
 # Pull latest
 git pull origin master
 
-# Fetch fresh data (optional)
+# Fetch fresh data (all timeframes)
 python -m data_ingestion.fetch_data --source coinbase --symbol BTC/USD --timeframe 1h --start 2024-01-01 --end 2025-08-01 --out ./data/BTC_USD_1h.csv --validate
+python -m data_ingestion.fetch_data --source coinbase --symbol BTC/USD --timeframe 15m --start 2024-01-01 --end 2025-08-01 --out ./data/BTC_USD_15m.csv --validate
+python -m data_ingestion.fetch_data --source coinbase --symbol BTC/USD --timeframe 1d --start 2020-01-01 --end 2025-08-01 --out ./data/BTC_USD_1d.csv --validate
 
-# Run trend-only backtest (instant, no model)
-python -m backtest.backtest_runner --data ./data/BTC_USD_1h.csv --signal-mode trend --output ./backtest_results/btc_trend/
+# Run trend-only backtest with walk-forward + martingale (instant, no model)
+python -m backtest.backtest_runner --data ./data/BTC_USD_1h.csv --signal-mode trend --trend-prd 60 --trend-ext-break 0.03 --trend-ext-limit 0.01 --trend-min-bars 5 --position-size 0.25 --stop-loss 0.08 --loss-multiplier 1.5 --walk-forward --output ./backtest_results/btc_1h_martingale/
+
+# Run multi-timeframe backtest (1d filter + 1h entries)
+python -m backtest.backtest_runner --data ./data/BTC_USD_1h.csv --signal-mode multi_tf --macro-data ./data/BTC_USD_1d.csv --trend-prd 60 --trend-ext-break 0.03 --trend-ext-limit 0.01 --trend-min-bars 5 --macro-prd 10 --macro-ext-break 0.03 --macro-ext-limit 0.03 --macro-min-bars 3 --position-size 0.25 --stop-loss 0.08 --walk-forward --output ./backtest_results/btc_multi_tf_1d_1h/
 
 # Run Kronos backtest (requires model from GPU server)
-python -m backtest.backtest_runner --model ./finetune_csv/finetuned/btc_usd_1h_dev/basemodel/best_model --tokenizer ./finetune_csv/finetuned/btc_usd_1h_dev/tokenizer/best_model --data ./data/BTC_USD_1h.csv --device mps --output ./backtest_results/btc_kronos/
-
-# Run combined backtest
-python -m backtest.backtest_runner --model ./finetune_csv/finetuned/btc_usd_1h_dev/basemodel/best_model --tokenizer ./finetune_csv/finetuned/btc_usd_1h_dev/tokenizer/best_model --data ./data/BTC_USD_1h.csv --device mps --signal-mode combined --output ./backtest_results/btc_combined/
+python -m backtest.backtest_runner --model ./finetune_csv/finetuned/btc_usd_1h_prod/basemodel/best_model --tokenizer ./finetune_csv/finetuned/btc_usd_1h_prod/tokenizer/best_model --data ./data/BTC_USD_1h.csv --device mps --output ./backtest_results/btc_kronos/
 
 # Open reports
-open backtest_results/btc_trend/backtest_report.html
+open backtest_results/btc_1h_martingale/backtest_report.html
+open backtest_results/btc_multi_tf_1d_1h/backtest_report.html
 open backtest_results/btc_kronos/backtest_report.html
-open backtest_results/btc_combined/backtest_report.html
 
 # Commit results
 git add backtest_results/
@@ -437,6 +519,12 @@ git push origin master
 - kronos-mini (4.1M) on CPU: ~30-60 min for 10 epochs on 13K candles
 - kronos-small (24.7M) on CPU: 2-4 hours — use GPU server instead
 - Use `--skip-tokenizer` if tokenizer is already trained to save time
+
+### ArcticDB for faster data access
+ArcticDB provides 28-75x faster reads than CSV for OHLCV data (benchmarked on 91K rows).
+Install: `pip install arcticdb`
+Benchmark: `python -m backtest.benchmark_arcticdb --data ./data/BTC_USD_15m.csv`
+Note: arcticdb requires pandas<3, but pandas 3.x works at runtime despite the constraint.
 
 ### Python version issues
 - Requires Python 3.10+

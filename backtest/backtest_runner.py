@@ -157,6 +157,11 @@ def run_backtest(
     reset_on_win: bool = True,
     walk_forward: bool = False,
     train_ratio: float = 0.7,
+    macro_data_path: str = None,
+    macro_prd: int = 10,
+    macro_ext_break: float = 0.03,
+    macro_ext_limit: float = 0.03,
+    macro_min_bars: int = 3,
 ) -> dict:
     """
     Full backtest pipeline: load model, generate predictions, run backtest, generate report.
@@ -225,7 +230,7 @@ def run_backtest(
         reset_on_win=reset_on_win,
     )
 
-    if walk_forward:
+    if walk_forward and signal_mode != "multi_tf":
         if signal_mode == "trend":
             actual = data.set_index("timestamps")[["close"]]
         # predictions and actual already set above for kronos/combined
@@ -249,6 +254,136 @@ def run_backtest(
             title=f"{title} (Walk-Forward)",
             data_path=data_path,
             model_path=model_path if signal_mode != "trend" else "trend-only",
+        )
+        return metrics
+
+    if signal_mode == "multi_tf":
+        macro_data = pd.read_csv(macro_data_path)
+        macro_data["timestamps"] = pd.to_datetime(macro_data["timestamps"])
+        print(f"  Macro data: {len(macro_data)} rows, range: {macro_data['timestamps'].min()} to {macro_data['timestamps'].max()}")
+
+        signals = backtester.generate_multi_tf_signals(
+            entry_data=data,
+            macro_data=macro_data,
+            entry_prd=trend_prd,
+            entry_ext_break=trend_ext_break,
+            entry_ext_limit=trend_ext_limit,
+            entry_min_bars=trend_min_bars,
+            macro_prd=macro_prd,
+            macro_ext_break=macro_ext_break,
+            macro_ext_limit=macro_ext_limit,
+            macro_min_bars=macro_min_bars,
+        )
+
+        if walk_forward:
+            split_idx = int(len(signals) * train_ratio)
+            split_date = signals.index[split_idx]
+            print(f"\nWalk-Forward Split: in-sample={split_idx} bars, out-of-sample={len(signals) - split_idx} bars")
+            print(f"Split date: {split_date}")
+
+            is_signals = signals.iloc[:split_idx]
+            oos_signals = signals.iloc[split_idx:]
+
+            print("\n--- In-Sample ---")
+            is_dir = os.path.join(output_dir, "in_sample")
+            is_results, is_trades = backtester.run_backtest(is_signals)
+            is_metrics = backtester.calculate_metrics(is_results, is_trades)
+            is_metrics["title"] = f"{title} (In-Sample)"
+            print("\n" + "=" * 60)
+            print(f"Backtest Report: {title} (In-Sample)")
+            print("=" * 60)
+            for k, v in is_metrics.items():
+                if isinstance(v, float):
+                    if "return" in k or "rate" in k or "drawdown" in k:
+                        print(f"  {k}: {v:.2%}")
+                    else:
+                        print(f"  {k}: {v:.4f}")
+                else:
+                    print(f"  {k}: {v}")
+            print("=" * 60)
+            os.makedirs(is_dir, exist_ok=True)
+            backtester.plot_results(is_results, is_metrics, os.path.join(is_dir, "backtest_chart.png"), f"{title} (In-Sample)")
+            if is_trades:
+                pd.DataFrame(is_trades).to_csv(os.path.join(is_dir, "trade_log.csv"), index=False)
+            is_results.to_csv(os.path.join(is_dir, "backtest_results.csv"))
+
+            print("\n--- Out-of-Sample ---")
+            oos_dir = os.path.join(output_dir, "out_of_sample")
+            oos_results, oos_trades = backtester.run_backtest(oos_signals)
+            oos_metrics = backtester.calculate_metrics(oos_results, oos_trades)
+            oos_metrics["title"] = f"{title} (Out-of-Sample)"
+            print("\n" + "=" * 60)
+            print(f"Backtest Report: {title} (Out-of-Sample)")
+            print("=" * 60)
+            for k, v in oos_metrics.items():
+                if isinstance(v, float):
+                    if "return" in k or "rate" in k or "drawdown" in k:
+                        print(f"  {k}: {v:.2%}")
+                    else:
+                        print(f"  {k}: {v:.4f}")
+                else:
+                    print(f"  {k}: {v}")
+            print("=" * 60)
+            os.makedirs(oos_dir, exist_ok=True)
+            backtester.plot_results(oos_results, oos_metrics, os.path.join(oos_dir, "backtest_chart.png"), f"{title} (Out-of-Sample)")
+            if oos_trades:
+                pd.DataFrame(oos_trades).to_csv(os.path.join(oos_dir, "trade_log.csv"), index=False)
+            oos_results.to_csv(os.path.join(oos_dir, "backtest_results.csv"))
+
+            # Summary
+            print("\n" + "=" * 60)
+            print(f"Walk-Forward Summary: {title}")
+            print("=" * 60)
+            print(f"{'Metric':<20} {'In-Sample':>15} {'Out-of-Sample':>15}")
+            print("-" * 52)
+            for key in ["total_return", "annual_return", "sharpe_ratio", "max_drawdown", "win_rate", "total_trades"]:
+                is_val = is_metrics.get(key, 0)
+                oos_val = oos_metrics.get(key, 0)
+                if isinstance(is_val, float) and ("return" in key or "rate" in key or "drawdown" in key):
+                    print(f"  {key:<18} {is_val:>14.2%} {oos_val:>14.2%}")
+                else:
+                    print(f"  {key:<18} {is_val:>15} {oos_val:>15}")
+            print("=" * 60)
+
+            metrics = {"in_sample": is_metrics, "out_of_sample": oos_metrics}
+            report_gen = ReportGenerator()
+            report_gen.generate_report(
+                metrics=oos_metrics,
+                output_path=os.path.join(output_dir, "backtest_report.html"),
+                title=f"{title} (Multi-TF Walk-Forward)",
+                data_path=data_path,
+                model_path=f"multi_tf: entry={os.path.basename(data_path)}, macro={os.path.basename(macro_data_path)}",
+            )
+            return metrics
+
+        # Non-walk-forward mode
+        results, trades = backtester.run_backtest(signals)
+        metrics = backtester.calculate_metrics(results, trades)
+        print("\n" + "=" * 60)
+        print(f"Backtest Report: {title}")
+        print("=" * 60)
+        for k, v in metrics.items():
+            if isinstance(v, float):
+                if "return" in k or "rate" in k or "drawdown" in k:
+                    print(f"  {k}: {v:.2%}")
+                else:
+                    print(f"  {k}: {v:.4f}")
+            else:
+                print(f"  {k}: {v}")
+        print("=" * 60)
+        os.makedirs(output_dir, exist_ok=True)
+        backtester.plot_results(results, metrics, os.path.join(output_dir, "backtest_chart.png"), title)
+        if trades:
+            pd.DataFrame(trades).to_csv(os.path.join(output_dir, "trade_log.csv"), index=False)
+        results.to_csv(os.path.join(output_dir, "backtest_results.csv"))
+
+        report_gen = ReportGenerator()
+        report_gen.generate_report(
+            metrics=metrics,
+            output_path=os.path.join(output_dir, "backtest_report.html"),
+            title=title,
+            data_path=data_path,
+            model_path=f"multi_tf: entry={os.path.basename(data_path)}, macro={os.path.basename(macro_data_path)}",
         )
         return metrics
 
@@ -309,8 +444,8 @@ def main():
     parser.add_argument("--fee", type=float, default=0.001, help="Fee percentage per trade")
     parser.add_argument("--temp", type=float, default=0.6, help="Sampling temperature")
     parser.add_argument("--samples", type=int, default=5, help="Number of prediction samples")
-    parser.add_argument("--signal-mode", choices=["kronos", "trend", "combined"], default="kronos",
-                        help="Signal source: kronos (model predictions), trend (trend detection only), combined (both)")
+    parser.add_argument("--signal-mode", choices=["kronos", "trend", "combined", "multi_tf"], default="kronos",
+                        help="Signal source: kronos, trend, combined, or multi_tf (multi-timeframe trend confirmation)")
     parser.add_argument("--trend-prd", type=int, default=60, help="Trend detection period (bars)")
     parser.add_argument("--trend-ext-break", type=float, default=0.05, help="Trend break line gradient")
     parser.add_argument("--trend-ext-limit", type=float, default=0.02, help="Trend limit line gradient")
@@ -323,11 +458,20 @@ def main():
     parser.add_argument("--no-reset-on-win", action="store_true", help="Don't reset martingale size after a winning trade")
     parser.add_argument("--walk-forward", action="store_true", help="Run walk-forward backtest (split into in-sample and out-of-sample)")
     parser.add_argument("--train-ratio", type=float, default=0.7, help="Fraction of data for in-sample (walk-forward mode, default 0.7)")
+    # Multi-timeframe args
+    parser.add_argument("--macro-data", default=None, help="Path to macro timeframe CSV (e.g., 1d data for multi_tf mode)")
+    parser.add_argument("--macro-prd", type=int, default=10, help="Macro timeframe trend period (bars)")
+    parser.add_argument("--macro-ext-break", type=float, default=0.03, help="Macro timeframe break gradient")
+    parser.add_argument("--macro-ext-limit", type=float, default=0.03, help="Macro timeframe limit gradient")
+    parser.add_argument("--macro-min-bars", type=int, default=3, help="Macro timeframe min bars")
 
     args = parser.parse_args()
 
     if args.signal_mode in ("kronos", "combined") and (not args.model or not args.tokenizer):
         parser.error(f"--model and --tokenizer are required when --signal-mode is {args.signal_mode}")
+
+    if args.signal_mode == "multi_tf" and not args.macro_data:
+        parser.error("--macro-data is required when --signal-mode is multi_tf")
 
     metrics = run_backtest(
         model_path=args.model or "",
@@ -356,6 +500,11 @@ def main():
         reset_on_win=not args.no_reset_on_win,
         walk_forward=args.walk_forward,
         train_ratio=args.train_ratio,
+        macro_data_path=args.macro_data,
+        macro_prd=args.macro_prd,
+        macro_ext_break=args.macro_ext_break,
+        macro_ext_limit=args.macro_ext_limit,
+        macro_min_bars=args.macro_min_bars,
     )
 
     if metrics:

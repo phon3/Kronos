@@ -1,0 +1,46 @@
+# Mac dev config: Fine-tune Kronos-mini on BTC/USD 1h (lightweight)
+data:
+  data_path: "./data/BTC_USD_1h.csv"
+  lookback_window: 256
+  predict_window: 48
+  max_context: 2048
+  clip: 5.0
+  train_ratio: 0.85
+  val_ratio: 0.10
+  test_ratio: 0.05
+
+training:
+  tokenizer_epochs: 10
+  basemodel_epochs: 10
+  batch_size: 8
+  log_interval: 50
+  num_workers: 2
+  seed: 42
+  tokenizer_learning_rate: 0.0002
+  predictor_learning_rate: 0.000004
+  adam_beta1: 0.9
+  adam_beta2: 0.95
+  adam_weight_decay: 0.1
+  accumulation_steps: 4
+
+model_paths:
+  pretrained_tokenizer: "NeoQuasar/Kronos-Tokenizer-base"
+  pretrained_predictor: "NeoQuasar/Kronos-mini"
+  exp_name: "btc_usd_1h_mac"
+  base_path: "./finetune_csv/finetuned/"
+  base_save_path: ""
+  finetuned_tokenizer: ""
+  tokenizer_save_name: "tokenizer"
+  basemodel_save_name: "basemodel"
+
+experiment:
+  name: "btc_usd_finetune_mac"
+  description: "BTC/USD 1h fine-tuning on Mac — dev/mini model"
+  use_comet: false
+  train_tokenizer: true
+  train_basemodel: true
+  skip_existing: false
+
+device:
+  use_cuda: false
+  device_id: 0

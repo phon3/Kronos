@@ -179,6 +179,77 @@ class CryptoBacktester:
 
         return combined
 
+    def generate_multi_tf_signals(
+        self,
+        entry_data: pd.DataFrame,
+        macro_data: pd.DataFrame,
+        entry_prd: int = 60,
+        entry_ext_break: float = 0.03,
+        entry_ext_limit: float = 0.01,
+        entry_min_bars: int = 5,
+        macro_prd: int = 10,
+        macro_ext_break: float = 0.03,
+        macro_ext_limit: float = 0.03,
+        macro_min_bars: int = 3,
+    ) -> pd.DataFrame:
+        """Generate signals using multi-timeframe trend confirmation.
+
+        A higher timeframe (macro) trend acts as a directional filter:
+        only long positions are taken when macro trend is up, only short
+        when macro trend is down. The lower timeframe (entry) determines
+        timing of entries and exits.
+
+        Args:
+            entry_data: Lower timeframe OHLCV DataFrame (e.g., 1h candles)
+            macro_data: Higher timeframe OHLCV DataFrame (e.g., 1d candles)
+            entry_*: Trend params for the entry timeframe
+            macro_*: Trend params for the macro timeframe
+
+        Returns:
+            DataFrame with columns: actual_close, entry_signal, macro_signal, signal, position
+        """
+        # Generate entry-timeframe signals
+        entry_signals = self.generate_trend_signals(
+            entry_data,
+            prd=entry_prd,
+            ext_break=entry_ext_break,
+            ext_limit=entry_ext_limit,
+            min_bars=entry_min_bars,
+        )
+
+        # Generate macro-timeframe signals
+        macro_signals = self.generate_trend_signals(
+            macro_data,
+            prd=macro_prd,
+            ext_break=macro_ext_break,
+            ext_limit=macro_ext_limit,
+            min_bars=macro_min_bars,
+        )
+
+        # Resample macro signals to entry timeframe using ffill
+        # macro_signals has DatetimeIndex, entry_signals has DatetimeIndex
+        macro_series = macro_signals["trend_signal"]
+        # Reindex macro to entry timestamps with forward fill
+        macro_aligned = macro_series.reindex(entry_signals.index, method="ffill").fillna(0)
+
+        combined = entry_signals.copy()
+        combined["entry_signal"] = entry_signals["trend_signal"]
+        combined["macro_signal"] = macro_aligned
+
+        # Only take positions when entry and macro agree
+        combined["signal"] = 0
+        long_cond = (combined["entry_signal"] > 0) & (combined["macro_signal"] > 0)
+        short_cond = (combined["entry_signal"] < 0) & (combined["macro_signal"] < 0)
+
+        combined.loc[long_cond, "signal"] = 1
+        if self.allow_short:
+            combined.loc[short_cond, "signal"] = -1
+
+        # Position: hold until either signal reverses
+        combined["position"] = combined["signal"].replace(0, np.nan).ffill().fillna(0)
+
+        return combined
+
     def run_backtest(self, signals_df: pd.DataFrame) -> tuple[pd.DataFrame, list]:
         """
         Execute backtest on signal DataFrame.

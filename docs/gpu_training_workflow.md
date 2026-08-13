@@ -82,7 +82,14 @@ ls -la data/BTC_USD_1h.csv
 ### Option B: Fetch data directly on the GPU server
 
 ```bash
+# 1h (primary)
 python -m data_ingestion.fetch_data --source coinbase --symbol BTC/USD --timeframe 1h --start 2024-01-01 --end 2025-08-01 --out ./data/BTC_USD_1h.csv --validate
+
+# 15m (high frequency)
+python -m data_ingestion.fetch_data --source coinbase --symbol BTC/USD --timeframe 15m --start 2024-01-01 --end 2025-08-01 --out ./data/BTC_USD_15m.csv --validate
+
+# 1d (macro trend)
+python -m data_ingestion.fetch_data --source coinbase --symbol BTC/USD --timeframe 1d --start 2020-01-01 --end 2025-08-01 --out ./data/BTC_USD_1d.csv --validate
 ```
 
 ### Option C: Transfer data from Mac via scp
@@ -96,32 +103,51 @@ scp ./data/BTC_USD_1h.csv user@gpu-server:/path/to/Kronos/data/BTC_USD_1h.csv
 
 ## Step 3: Run Fine-Tuning
 
-### 3.1 Single GPU training
+### Available configs
+
+| Config | Timeframe | Model | Lookback | Pred Len | Epochs (tok+base) |
+|--------|-----------|-------|----------|----------|-------------------|
+| `config_btc_usd_1h_prod.yaml` | 1h | kronos-small | 512 | 48 | 30 + 25 |
+| `config_btc_usd_15m_prod.yaml` | 15m | kronos-small | 256 | 24 | 30 + 25 |
+| `config_btc_usd_1d_prod.yaml` | 1d | kronos-small | 512 | 14 | 40 + 35 |
+
+### 3.1 Single GPU training (1h — primary)
 
 ```bash
 cd finetune_csv
-python train_sequential.py --config configs/config_btc_usd_1h.yaml
+python train_sequential.py --config configs/config_btc_usd_1h_prod.yaml
 ```
 
-### 3.2 Multi-GPU training (DDP)
+### 3.2 Train all three timeframes
 
-If you have multiple GPUs:
+```bash
+# 1h (primary timeframe)
+python train_sequential.py --config configs/config_btc_usd_1h_prod.yaml
+
+# 15m (high frequency, 91K rows — longer training time)
+python train_sequential.py --config configs/config_btc_usd_15m_prod.yaml
+
+# 1d (macro, 2.4K rows — more epochs for small dataset)
+python train_sequential.py --config configs/config_btc_usd_1d_prod.yaml
+```
+
+### 3.3 Multi-GPU training (DDP)
 
 ```bash
 cd finetune_csv
-torchrun --standalone --nproc_per_node=2 train_sequential.py --config configs/config_btc_usd_1h.yaml
+torchrun --standalone --nproc_per_node=2 train_sequential.py --config configs/config_btc_usd_1h_prod.yaml
 ```
 
-### 3.3 Skip tokenizer training (if already trained)
+### 3.4 Skip tokenizer training (if already trained)
 
 ```bash
-python train_sequential.py --config configs/config_btc_usd_1h.yaml --skip-tokenizer
+python train_sequential.py --config configs/config_btc_usd_1h_prod.yaml --skip-tokenizer
 ```
 
-### 3.4 Skip existing models (resume without retraining)
+### 3.5 Skip existing models (resume without retraining)
 
 ```bash
-python train_sequential.py --config configs/config_btc_usd_1h.yaml --skip-existing
+python train_sequential.py --config configs/config_btc_usd_1h_prod.yaml --skip-existing
 ```
 
 ---
@@ -269,15 +295,15 @@ Then pull on the other machine to review.
 
 ## Backtest Signal Modes
 
-The backtest runner supports three signal modes via `--signal-mode`:
+The backtest runner supports four signal modes via `--signal-mode`:
 
 ### `kronos` (default) — Model predictions only
 Uses Kronos predicted returns to generate long/short signals. Requires `--model` and `--tokenizer`.
 
 ```bash
 python -m backtest.backtest_runner \
-  --model ./finetune_csv/finetuned/btc_usd_1h_dev/basemodel/best_model \
-  --tokenizer ./finetune_csv/finetuned/btc_usd_1h_dev/tokenizer/best_model \
+  --model ./finetune_csv/finetuned/btc_usd_1h_prod/basemodel/best_model \
+  --tokenizer ./finetune_csv/finetuned/btc_usd_1h_prod/tokenizer/best_model \
   --data ./data/BTC_USD_1h.csv \
   --device cuda \
   --signal-mode kronos \
@@ -287,14 +313,18 @@ python -m backtest.backtest_runner \
 ### `trend` — Trend detection only (no model needed)
 Uses the ported trend detection algorithm (break line / limit line) to identify advance/decline movements. No model or tokenizer required — runs on any machine.
 
+Best params from param sweep: `prd=60, ext_break=0.03, ext_limit=0.01, min_bars=5` for 1h.
+
 ```bash
 python -m backtest.backtest_runner \
   --data ./data/BTC_USD_1h.csv \
   --signal-mode trend \
   --trend-prd 60 \
-  --trend-ext-break 0.05 \
-  --trend-ext-limit 0.02 \
+  --trend-ext-break 0.03 \
+  --trend-ext-limit 0.01 \
   --trend-min-bars 5 \
+  --position-size 0.25 \
+  --stop-loss 0.08 \
   --output ./backtest_results/btc_trend/
 ```
 
@@ -303,16 +333,44 @@ Only enters a position when both Kronos prediction and trend detection agree on 
 
 ```bash
 python -m backtest.backtest_runner \
-  --model ./finetune_csv/finetuned/btc_usd_1h_dev/basemodel/best_model \
-  --tokenizer ./finetune_csv/finetuned/btc_usd_1h_dev/tokenizer/best_model \
+  --model ./finetune_csv/finetuned/btc_usd_1h_prod/basemodel/best_model \
+  --tokenizer ./finetune_csv/finetuned/btc_usd_1h_prod/tokenizer/best_model \
   --data ./data/BTC_USD_1h.csv \
   --device cuda \
   --signal-mode combined \
   --trend-prd 60 \
-  --trend-ext-break 0.05 \
-  --trend-ext-limit 0.02 \
+  --trend-ext-break 0.03 \
+  --trend-ext-limit 0.01 \
   --output ./backtest_results/btc_combined/
 ```
+
+### `multi_tf` — Multi-timeframe trend confirmation
+Uses a higher timeframe (e.g., 1d) trend as a directional filter for lower timeframe (e.g., 1h) entries. Only takes positions when both timeframes agree.
+
+```bash
+python -m backtest.backtest_runner \
+  --data ./data/BTC_USD_1h.csv \
+  --signal-mode multi_tf \
+  --macro-data ./data/BTC_USD_1d.csv \
+  --trend-prd 60 --trend-ext-break 0.03 --trend-ext-limit 0.01 --trend-min-bars 5 \
+  --macro-prd 10 --macro-ext-break 0.03 --macro-ext-limit 0.03 --macro-min-bars 3 \
+  --position-size 0.25 --stop-loss 0.08 \
+  --walk-forward \
+  --output ./backtest_results/btc_multi_tf_1d_1h/
+```
+
+### Position sizing & martingale
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--position-size` | 1.0 | Fraction of capital per trade (0.25 = 25%) |
+| `--stop-loss` | None | Stop-loss % (0.08 = 8% loss closes position) |
+| `--take-profit` | None | Take-profit % (0.10 = 10% gain closes position) |
+| `--loss-multiplier` | 1.0 | Martingale: multiply position after each loss (1.5 = 1.5x) |
+| `--max-position-mult` | 4.0 | Cap for martingale multiplier |
+| `--no-reset-on-win` | false | Don't reset martingale size after a win |
+| `--walk-forward` | false | Split into in-sample/out-of-sample |
+| `--train-ratio` | 0.7 | In-sample fraction for walk-forward |
 
 ### Trend detection parameters
 
@@ -323,7 +381,25 @@ python -m backtest.backtest_runner \
 | `--trend-ext-limit` | 0.02 | Limit line gradient (2% over prd bars) |
 | `--trend-min-bars` | 5 | Minimum bars for a valid movement |
 
+### Macro timeframe parameters (multi_tf mode only)
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `--macro-data` | None | Path to macro timeframe CSV (required for multi_tf) |
+| `--macro-prd` | 10 | Macro trend period (bars) |
+| `--macro-ext-break` | 0.03 | Macro break line gradient |
+| `--macro-ext-limit` | 0.03 | Macro limit line gradient |
+| `--macro-min-bars` | 3 | Macro minimum bars |
+
 Lower thresholds = more sensitive (more trades). Higher thresholds = more conservative (fewer, larger movements).
+
+### Best params by timeframe (from param sweep)
+
+| Timeframe | prd | ext_break | ext_limit | min_bars | OOS Return | Sharpe | Win Rate |
+|-----------|-----|-----------|-----------|----------|------------|--------|----------|
+| 15m       | 240 | 0.03      | 0.01      | 3        | 137.2%     | 17.85  | 100%     |
+| 1h        | 60  | 0.03      | 0.01      | 5        | 64.6%      | 16.19  | 100%     |
+| 1d        | 10  | 0.03      | 0.03      | 3        | 171.1%     | 5.97   | 90%      |
 
 ---
 
@@ -339,16 +415,28 @@ git push origin main
 # === GPU Server ===
 git pull origin main
 pip install -r requirements.txt
+
+# Fetch data (gitignored, fetch on each machine)
+python -m data_ingestion.fetch_data --source coinbase --symbol BTC/USD --timeframe 1h --start 2024-01-01 --end 2025-08-01 --out ./data/BTC_USD_1h.csv --validate
+python -m data_ingestion.fetch_data --source coinbase --symbol BTC/USD --timeframe 15m --start 2024-01-01 --end 2025-08-01 --out ./data/BTC_USD_15m.csv --validate
+python -m data_ingestion.fetch_data --source coinbase --symbol BTC/USD --timeframe 1d --start 2020-01-01 --end 2025-08-01 --out ./data/BTC_USD_1d.csv --validate
+
+# Train all three timeframes
 cd finetune_csv
-python train_sequential.py --config configs/config_btc_usd_1h.yaml
-# → produces finetuned/btc_usd_1h_dev/{tokenizer,basemodel}/best_model/
+python train_sequential.py --config configs/config_btc_usd_1h_prod.yaml
+python train_sequential.py --config configs/config_btc_usd_15m_prod.yaml
+python train_sequential.py --config configs/config_btc_usd_1d_prod.yaml
+# → produces finetuned/btc_usd_{1h,15m,1d}_prod/{tokenizer,basemodel}/best_model/
 
 # Share models back (choose one):
-gh release create v0.1-btc-usd-1h-dev ./finetune_csv/finetuned/btc_usd_1h_dev_models.tar.gz
-# OR: scp -r finetune_csv/finetuned/btc_usd_1h_dev mac:~/Kronos/finetune_csv/finetuned/
+gh release create v0.2-btc-usd-all-tf ./finetune_csv/finetuned/*_prod_models.tar.gz
+# OR: scp -r finetune_csv/finetuned/ mac:~/Kronos/finetune_csv/finetuned/
 
-# Run backtest on GPU:
-python -m backtest.backtest_runner --model ./finetune_csv/finetuned/btc_usd_1h_dev/basemodel/best_model --tokenizer ./finetune_csv/finetuned/btc_usd_1h_dev/tokenizer/best_model --data ./data/BTC_USD_1h.csv --device cuda
+# Run backtest on GPU (trend-only, no model needed):
+python -m backtest.backtest_runner --data ./data/BTC_USD_1h.csv --signal-mode trend --trend-prd 60 --trend-ext-break 0.03 --trend-ext-limit 0.01 --trend-min-bars 5 --position-size 0.25 --stop-loss 0.08 --walk-forward --output ./backtest_results/btc_1h_trend/
+
+# Run multi-timeframe backtest:
+python -m backtest.backtest_runner --data ./data/BTC_USD_1h.csv --signal-mode multi_tf --macro-data ./data/BTC_USD_1d.csv --trend-prd 60 --trend-ext-break 0.03 --trend-ext-limit 0.01 --trend-min-bars 5 --macro-prd 10 --macro-ext-break 0.03 --macro-ext-limit 0.03 --macro-min-bars 3 --position-size 0.25 --stop-loss 0.08 --walk-forward --output ./backtest_results/btc_multi_tf_1d_1h/
 
 # === Mac (review results) ===
 git pull origin main
@@ -368,10 +456,13 @@ git pull origin main
 - Try: `huggingface-cli download NeoQuasar/Kronos-small`
 
 ### Training is slow
-- kronos-small (24.7M params) on 13K candles should take ~15-30 min on a modern GPU
+- kronos-small (24.7M params) on 13K 1h candles: ~15-30 min on a modern GPU
+- kronos-small on 91K 15m candles: ~45-90 min (4x more data)
+- kronos-small on 2.4K 1d candles: ~10-20 min (small dataset, more epochs)
 - If using CPU, expect hours — use GPU
 - Check GPU utilization: `nvidia-smi -l 1`
 
 ### Data file missing on GPU server
-- The `data/` directory is not gitignored, but CSV files >100MB may cause issues
-- Use Git LFS or fetch directly on the GPU server with `data_ingestion.fetch_data`
+- CSV files in `data/` are gitignored — fetch them directly on each machine
+- Use `data_ingestion.fetch_data` to download from Coinbase
+- For large datasets, consider ArcticDB (28-75x faster reads than CSV, see `backtest/benchmark_arcticdb.py`)
