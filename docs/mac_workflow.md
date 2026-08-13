@@ -106,7 +106,7 @@ python -m data_ingestion.fetch_data \
   --out ./data/BTC_USD_1d.csv --validate
 ```
 
-> **Note**: CSV files in `data/` are gitignored (too large for git). Fetch them locally on each machine.
+> **Note**: Candle CSV files in `data/` are tracked in Git (BTC_USD_*.csv). Fetch fresh data locally with the commands above, or pull from GitHub.
 
 ### 2.2 Fetch NASDAQ data (Phase 2)
 
@@ -135,16 +135,26 @@ if report['errors']:
 "
 ```
 
-### 2.4 Data files are gitignored
+### 2.4 Data files in Git
 
-CSV files in `data/` are too large for git. Fetch them on each machine using the commands in 2.1.
-Configs and code are committed normally.
+Candle CSV files (`BTC_USD_*.csv`) in `data/` are tracked in Git. Pull from GitHub or fetch fresh data using the commands in 2.1.
+The `data/` folder is dedicated solely to candle data.
 
 ---
 
 ## Step 3: Run Backtests
 
-### 3.1 Trend-only backtest (no model, instant)
+### 3.0 Via Web UI (recommended)
+
+Start the web UI and use the Backtest tab:
+```bash
+python webui/app.py
+# Open http://localhost:7070, go to Backtest tab
+# Select signal mode, data, risk params, DeepTrade settings
+# Click Run Backtest — results show as metric cards
+```
+
+### 3.1 Trend-only backtest (CLI, no model, instant)
 
 This uses the ported trend detection algorithm — no model download, no GPU needed.
 Best params from param sweep: `prd=60, ext_break=0.03, ext_limit=0.01, min_bars=5` for 1h.
@@ -197,6 +207,27 @@ python -m backtest.backtest_runner \
 Open the report:
 ```bash
 open backtest_results/btc_trend/backtest_report.html
+```
+
+### 3.1d DeepTrade backtest (multi-target TP + daily loss limit)
+
+Uses DeepTrade methodology: partial exits at multiple TP levels and stops trading after daily drawdown limit:
+
+```bash
+python -m backtest.backtest_runner \
+  --data ./data/BTC_USD_1h.csv \
+  --signal-mode trend \
+  --trend-prd 60 --trend-ext-break 0.03 --trend-ext-limit 0.01 --trend-min-bars 5 \
+  --position-size 0.25 --stop-loss 0.08 \
+  --tp-levels 0.05:0.33,0.10:0.33,0.15:0.34 \
+  --daily-loss-limit 0.03 \
+  --walk-forward \
+  --output ./backtest_results/btc_deeptrade/
+```
+
+Open the report:
+```bash
+open backtest_results/btc_deeptrade/backtest_report.html
 ```
 
 ### 3.2 Kronos backtest with MPS (Apple Silicon)
@@ -483,6 +514,9 @@ python -m backtest.backtest_runner --data ./data/BTC_USD_1h.csv --signal-mode tr
 
 # Run multi-timeframe backtest (1d filter + 1h entries)
 python -m backtest.backtest_runner --data ./data/BTC_USD_1h.csv --signal-mode multi_tf --macro-data ./data/BTC_USD_1d.csv --trend-prd 60 --trend-ext-break 0.03 --trend-ext-limit 0.01 --trend-min-bars 5 --macro-prd 10 --macro-ext-break 0.03 --macro-ext-limit 0.03 --macro-min-bars 3 --position-size 0.25 --stop-loss 0.08 --walk-forward --output ./backtest_results/btc_multi_tf_1d_1h/
+
+# Run DeepTrade backtest (multi-target TP + daily loss limit)
+python -m backtest.backtest_runner --data ./data/BTC_USD_1h.csv --signal-mode trend --trend-prd 60 --trend-ext-break 0.03 --trend-ext-limit 0.01 --trend-min-bars 5 --position-size 0.25 --stop-loss 0.08 --tp-levels 0.05:0.33,0.10:0.33,0.15:0.34 --daily-loss-limit 0.03 --walk-forward --output ./backtest_results/btc_deeptrade/
 
 # Run Kronos backtest (requires model from GPU server)
 python -m backtest.backtest_runner --model ./finetune_csv/finetuned/btc_usd_1h_prod/basemodel/best_model --tokenizer ./finetune_csv/finetuned/btc_usd_1h_prod/tokenizer/best_model --data ./data/BTC_USD_1h.csv --device mps --output ./backtest_results/btc_kronos/

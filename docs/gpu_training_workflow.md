@@ -75,9 +75,11 @@ python -c "from model import Kronos, KronosTokenizer; print('Downloading kronos-
 ### Option A: Pull data CSV from GitHub (if committed)
 
 ```bash
-git pull origin main
-ls -la data/BTC_USD_1h.csv
+git pull origin master
+ls -la data/BTC_USD_1h.csv data/BTC_USD_15m.csv data/BTC_USD_1d.csv
 ```
+
+Candle CSV files (`BTC_USD_*.csv`) in `data/` are tracked in Git. They will be available after `git pull`.
 
 ### Option B: Fetch data directly on the GPU server
 
@@ -114,40 +116,49 @@ scp ./data/BTC_USD_1h.csv user@gpu-server:/path/to/Kronos/data/BTC_USD_1h.csv
 ### 3.1 Single GPU training (1h — primary)
 
 ```bash
-cd finetune_csv
-python train_sequential.py --config configs/config_btc_usd_1h_prod.yaml
+python finetune_csv/train_sequential.py --config finetune_csv/configs/config_btc_usd_1h_prod.yaml
 ```
+
+> **Note**: Run from the repo root, not from `finetune_csv/`. The configs use relative paths like `./data/BTC_USD_1h.csv`.
+> If you see "No such file or directory" for data files, either run from repo root or copy data: `cp -r data/ finetune_csv/`
 
 ### 3.2 Train all three timeframes
 
 ```bash
-# 1h (primary timeframe)
-python train_sequential.py --config configs/config_btc_usd_1h_prod.yaml
+# From repo root:
+python finetune_csv/train_sequential.py --config finetune_csv/configs/config_btc_usd_1h_prod.yaml
+python finetune_csv/train_sequential.py --config finetune_csv/configs/config_btc_usd_15m_prod.yaml
+python finetune_csv/train_sequential.py --config finetune_csv/configs/config_btc_usd_1d_prod.yaml
 
-# 15m (high frequency, 91K rows — longer training time)
-python train_sequential.py --config configs/config_btc_usd_15m_prod.yaml
-
-# 1d (macro, 2.4K rows — more epochs for small dataset)
-python train_sequential.py --config configs/config_btc_usd_1d_prod.yaml
+# Or use the batch script (runs all three sequentially):
+bash finetune_csv/run_all_gpu.sh
 ```
 
 ### 3.3 Multi-GPU training (DDP)
 
 ```bash
-cd finetune_csv
-torchrun --standalone --nproc_per_node=2 train_sequential.py --config configs/config_btc_usd_1h_prod.yaml
+torchrun --standalone --nproc_per_node=2 finetune_csv/train_sequential.py --config finetune_csv/configs/config_btc_usd_1h_prod.yaml
 ```
 
 ### 3.4 Skip tokenizer training (if already trained)
 
 ```bash
-python train_sequential.py --config configs/config_btc_usd_1h_prod.yaml --skip-tokenizer
+python finetune_csv/train_sequential.py --config finetune_csv/configs/config_btc_usd_1h_prod.yaml --skip-tokenizer
 ```
 
 ### 3.5 Skip existing models (resume without retraining)
 
 ```bash
-python train_sequential.py --config configs/config_btc_usd_1h_prod.yaml --skip-existing
+python finetune_csv/train_sequential.py --config finetune_csv/configs/config_btc_usd_1h_prod.yaml --skip-existing
+```
+
+### 3.6 Use tmux to keep training alive through SSH disconnects
+
+```bash
+tmux new -s kronos
+bash finetune_csv/run_all_gpu.sh
+# Detach: Ctrl+B, then D
+# Reconnect: tmux attach -s kronos
 ```
 
 ---
@@ -372,6 +383,15 @@ python -m backtest.backtest_runner \
 | `--walk-forward` | false | Split into in-sample/out-of-sample |
 | `--train-ratio` | 0.7 | In-sample fraction for walk-forward |
 
+### DeepTrade parameters
+
+| Flag | Default | Description |
+|-----------|---------|-------------|
+| `--tp-levels` | None | Multi-target take-profit levels, format: `pct:fraction,pct:fraction,...` (e.g., `0.05:0.33,0.10:0.33,0.15:0.34` exits 33% at 5% gain, 33% at 10%, 34% at 15%) |
+| `--daily-loss-limit` | None | Stop new trades after this daily drawdown % (e.g., `0.03` = 3%) |
+
+These implement the DeepTrade methodology: multi-target take-profit scaling (TP1/TP2/TP3 partial exits) and daily loss limit for risk management.
+
 ### Trend detection parameters
 
 | Parameter | Default | Description |
@@ -410,22 +430,20 @@ Lower thresholds = more sensitive (more trades). Higher thresholds = more conser
 python -m data_ingestion.fetch_data --source coinbase --symbol BTC/USD --timeframe 1h --start 2024-01-01 --end 2025-08-01 --out ./data/BTC_USD_1h.csv --validate
 git add data/BTC_USD_1h.csv finetune_csv/configs/config_btc_usd_1h.yaml
 git commit -m "Add BTC/USD 1h data and fine-tune config"
-git push origin main
+git push origin master
 
 # === GPU Server ===
-git pull origin main
+git pull origin master
 pip install -r requirements.txt
 
-# Fetch data (gitignored, fetch on each machine)
+# Data is tracked in Git — git pull fetches candle CSVs
+# Or fetch fresh data:
 python -m data_ingestion.fetch_data --source coinbase --symbol BTC/USD --timeframe 1h --start 2024-01-01 --end 2025-08-01 --out ./data/BTC_USD_1h.csv --validate
-python -m data_ingestion.fetch_data --source coinbase --symbol BTC/USD --timeframe 15m --start 2024-01-01 --end 2025-08-01 --out ./data/BTC_USD_15m.csv --validate
-python -m data_ingestion.fetch_data --source coinbase --symbol BTC/USD --timeframe 1d --start 2020-01-01 --end 2025-08-01 --out ./data/BTC_USD_1d.csv --validate
 
-# Train all three timeframes
-cd finetune_csv
-python train_sequential.py --config configs/config_btc_usd_1h_prod.yaml
-python train_sequential.py --config configs/config_btc_usd_15m_prod.yaml
-python train_sequential.py --config configs/config_btc_usd_1d_prod.yaml
+# Train all three timeframes (from repo root)
+python finetune_csv/train_sequential.py --config finetune_csv/configs/config_btc_usd_1h_prod.yaml
+python finetune_csv/train_sequential.py --config finetune_csv/configs/config_btc_usd_15m_prod.yaml
+python finetune_csv/train_sequential.py --config finetune_csv/configs/config_btc_usd_1d_prod.yaml
 # → produces finetuned/btc_usd_{1h,15m,1d}_prod/{tokenizer,basemodel}/best_model/
 
 # Share models back (choose one):
@@ -439,7 +457,7 @@ python -m backtest.backtest_runner --data ./data/BTC_USD_1h.csv --signal-mode tr
 python -m backtest.backtest_runner --data ./data/BTC_USD_1h.csv --signal-mode multi_tf --macro-data ./data/BTC_USD_1d.csv --trend-prd 60 --trend-ext-break 0.03 --trend-ext-limit 0.01 --trend-min-bars 5 --macro-prd 10 --macro-ext-break 0.03 --macro-ext-limit 0.03 --macro-min-bars 3 --position-size 0.25 --stop-loss 0.08 --walk-forward --output ./backtest_results/btc_multi_tf_1d_1h/
 
 # === Mac (review results) ===
-git pull origin main
+git pull origin master
 # Open backtest_results/btc_usd_1h_dev/backtest_report.html in browser
 ```
 
@@ -463,6 +481,7 @@ git pull origin main
 - Check GPU utilization: `nvidia-smi -l 1`
 
 ### Data file missing on GPU server
-- CSV files in `data/` are gitignored — fetch them directly on each machine
-- Use `data_ingestion.fetch_data` to download from Coinbase
+- Candle CSV files (`BTC_USD_*.csv`) in `data/` are tracked in Git — `git pull` should fetch them
+- If missing, fetch directly: `python -m data_ingestion.fetch_data --source coinbase --symbol BTC/USD --timeframe 1h --start 2024-01-01 --end 2025-08-01 --out ./data/BTC_USD_1h.csv --validate`
+- If running from `finetune_csv/` and getting path errors, copy data: `cp -r data/ finetune_csv/`
 - For large datasets, consider ArcticDB (28-75x faster reads than CSV, see `backtest/benchmark_arcticdb.py`)
