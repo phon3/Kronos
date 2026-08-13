@@ -27,6 +27,9 @@ class CryptoBacktester:
         position_size_pct: float = 1.0,
         stop_loss_pct: Optional[float] = None,
         take_profit_pct: Optional[float] = None,
+        loss_multiplier: float = 1.0,
+        max_position_multiplier: float = 4.0,
+        reset_on_win: bool = True,
     ):
         self.initial_capital = initial_capital
         self.threshold = threshold
@@ -36,6 +39,9 @@ class CryptoBacktester:
         self.position_size_pct = position_size_pct
         self.stop_loss_pct = stop_loss_pct
         self.take_profit_pct = take_profit_pct
+        self.loss_multiplier = loss_multiplier
+        self.max_position_multiplier = max_position_multiplier
+        self.reset_on_win = reset_on_win
 
     def generate_signals(self, predictions: pd.DataFrame, actual: pd.DataFrame) -> pd.DataFrame:
         """
@@ -177,10 +183,12 @@ class CryptoBacktester:
         """
         Execute backtest on signal DataFrame.
 
-        Supports position sizing (% of capital), stop-loss, and take-profit.
-        When stop_loss_pct or take_profit_pct is set, positions are closed
-        if the price moves against or in favor of the position by the
-        specified percentage, even if the signal hasn't reversed.
+        Supports position sizing (% of capital), stop-loss, take-profit,
+        and martingale-style loss escalation.
+
+        When loss_multiplier > 1.0, position size increases by that factor
+        after each consecutive losing trade, up to max_position_multiplier.
+        If reset_on_win is True, size resets to base after any winning trade.
 
         Args:
             signals_df: Output from generate_signals()
@@ -192,6 +200,7 @@ class CryptoBacktester:
         position = 0.0
         entry_price = 0.0
         trades = []
+        consecutive_losses = 0
 
         results = pd.DataFrame(index=signals_df.index)
         results["capital"] = 0.0
@@ -242,6 +251,13 @@ class CryptoBacktester:
                         capital -= trade_value + fee
 
                     pnl = (exec_price - entry_price) * position - fee
+
+                    # Update consecutive losses for martingale
+                    if pnl < 0:
+                        consecutive_losses += 1
+                    elif pnl > 0 and self.reset_on_win:
+                        consecutive_losses = 0
+
                     trades.append({
                         "timestamp": timestamp,
                         "action": "CLOSE",
@@ -251,6 +267,7 @@ class CryptoBacktester:
                         "pnl": pnl,
                         "capital": capital,
                         "reason": close_reason,
+                        "consecutive_losses": consecutive_losses,
                     })
                     position = 0.0
 
@@ -258,7 +275,12 @@ class CryptoBacktester:
             if i > 0 and target_signal != 0 and position == 0:
                 side = 1 if target_signal > 0 else (-1 if self.allow_short else 0)
                 if side != 0 and capital > 0:
-                    alloc = capital * self.position_size_pct
+                    # Martingale: scale position size by loss_multiplier^consecutive_losses
+                    size_mult = min(
+                        self.loss_multiplier ** consecutive_losses,
+                        self.max_position_multiplier,
+                    ) if self.loss_multiplier > 1.0 else 1.0
+                    alloc = capital * self.position_size_pct * size_mult
                     exec_price = price * (1 + self.slippage_pct) if side > 0 else price * (1 - self.slippage_pct)
                     units = alloc / exec_price
                     fee = alloc * self.fee_pct
@@ -280,6 +302,8 @@ class CryptoBacktester:
                         "pnl": 0.0,
                         "capital": capital,
                         "reason": "SIGNAL",
+                        "consecutive_losses": consecutive_losses,
+                        "size_multiplier": size_mult,
                     })
                     prev_signal = target_signal
 
@@ -308,6 +332,10 @@ class CryptoBacktester:
                 capital -= trade_value + fee
 
             pnl = (exec_price - entry_price) * position - fee
+            if pnl < 0:
+                consecutive_losses += 1
+            elif pnl > 0 and self.reset_on_win:
+                consecutive_losses = 0
             trades.append({
                 "timestamp": signals_df.index[-1],
                 "action": "CLOSE",
@@ -317,6 +345,7 @@ class CryptoBacktester:
                 "pnl": pnl,
                 "capital": capital,
                 "reason": "END",
+                "consecutive_losses": consecutive_losses,
             })
 
         return results, trades

@@ -152,6 +152,9 @@ def run_backtest(
     position_size_pct: float = 1.0,
     stop_loss_pct: Optional[float] = None,
     take_profit_pct: Optional[float] = None,
+    loss_multiplier: float = 1.0,
+    max_position_multiplier: float = 4.0,
+    reset_on_win: bool = True,
     walk_forward: bool = False,
     train_ratio: float = 0.7,
 ) -> dict:
@@ -217,6 +220,9 @@ def run_backtest(
         position_size_pct=position_size_pct,
         stop_loss_pct=stop_loss_pct,
         take_profit_pct=take_profit_pct,
+        loss_multiplier=loss_multiplier,
+        max_position_multiplier=max_position_multiplier,
+        reset_on_win=reset_on_win,
     )
 
     if walk_forward:
@@ -312,6 +318,9 @@ def main():
     parser.add_argument("--position-size", type=float, default=1.0, help="Fraction of capital to allocate per trade (0-1, default 1.0 = all in)")
     parser.add_argument("--stop-loss", type=float, default=None, help="Stop-loss percentage (e.g. 0.05 = 5%% loss closes position)")
     parser.add_argument("--take-profit", type=float, default=None, help="Take-profit percentage (e.g. 0.10 = 10%% gain closes position)")
+    parser.add_argument("--loss-multiplier", type=float, default=1.0, help="Martingale: multiply position size after each consecutive loss (e.g. 1.5, 2.0). Default 1.0 = disabled")
+    parser.add_argument("--max-position-mult", type=float, default=4.0, help="Cap for martingale position multiplier (default 4.0x base size)")
+    parser.add_argument("--no-reset-on-win", action="store_true", help="Don't reset martingale size after a winning trade")
     parser.add_argument("--walk-forward", action="store_true", help="Run walk-forward backtest (split into in-sample and out-of-sample)")
     parser.add_argument("--train-ratio", type=float, default=0.7, help="Fraction of data for in-sample (walk-forward mode, default 0.7)")
 
@@ -342,6 +351,9 @@ def main():
         position_size_pct=args.position_size,
         stop_loss_pct=args.stop_loss,
         take_profit_pct=args.take_profit,
+        loss_multiplier=args.loss_multiplier,
+        max_position_multiplier=args.max_position_mult,
+        reset_on_win=not args.no_reset_on_win,
         walk_forward=args.walk_forward,
         train_ratio=args.train_ratio,
     )
