@@ -119,6 +119,7 @@ def generate_predictions(
 
         # Use mean across samples
         pred_df.index = y_timestamp
+        pred_df["prediction_window"] = len(all_preds)
         all_preds.append(pred_df)
 
     if not all_preds:

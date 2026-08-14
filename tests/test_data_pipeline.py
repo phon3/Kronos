@@ -170,6 +170,19 @@ class TestCryptoBacktester:
         assert "position" in signals.columns
         assert len(signals) == 100
 
+    def test_prediction_window_boundaries_do_not_create_signals(self):
+        dates = pd.date_range("2024-01-01", periods=4, freq="1h")
+        actual = pd.DataFrame({"close": [100, 101, 200, 202]}, index=dates)
+        predictions = pd.DataFrame({
+            "close": [100, 101, 200, 202],
+            "prediction_window": [0, 0, 1, 1],
+        }, index=dates)
+
+        signals = CryptoBacktester(threshold=0.50).generate_signals(predictions, actual)
+
+        assert pd.isna(signals["pred_return"].iloc[2])
+        assert signals["signal"].eq(0).all()
+
     def test_run_backtest_returns_results(self):
         dates = pd.date_range("2024-01-01", periods=200, freq="1h")
         prices = np.cumsum(np.random.randn(200) * 100) + 40000

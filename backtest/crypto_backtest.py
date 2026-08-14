@@ -69,7 +69,11 @@ class CryptoBacktester:
         combined["predicted_close"] = combined["predicted_close"].ffill()
 
         # Calculate predicted return
-        combined["pred_return"] = combined["predicted_close"].pct_change()
+        if "prediction_window" in predictions.columns:
+            combined["prediction_window"] = predictions["prediction_window"].reindex(combined.index)
+            combined["pred_return"] = combined.groupby("prediction_window")["predicted_close"].pct_change()
+        else:
+            combined["pred_return"] = combined["predicted_close"].pct_change()
 
         # Generate signals
         combined["signal"] = 0
