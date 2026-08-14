@@ -74,7 +74,49 @@ Corrected OOS returns:
 | Aggressive | 4.36% | 11.75% | 70 | No |
 | DeepTrade | 0.89% | 11.75% | 71 reported exit events | No |
 
-Thus the corrected Combined strategy has adequate activity but does not produce OOS alpha.
+Thus continuous-confirmation Combined has adequate activity but does not produce OOS alpha.
+
+## Exit-Reason Diagnosis
+
+The 70-exit held-regime diagnostic showed:
+
+- 69 exits caused by Kronos/Combined signal disagreement;
+- 0 stop-loss exits;
+- 0 single take-profit exits;
+- 1 end-of-period exit;
+- Median holding period: 5.5 hours;
+- Average holding period: 9.74 hours;
+- Maximum holding period: 63 hours.
+
+Configured stops of 4%, 8%, and 12% did not cause the short holding periods. Continuous confirmation was closing positions whenever Kronos flipped, even while the held trend regime had not reversed.
+
+## Entry-Only Policy and Causality Correction
+
+A second policy was added: Kronos must agree with the held trend to enter, but only causal trend reversal, stop loss, or explicit exit rules close the position.
+
+An initial full-history test produced implausibly perfect performance and exposed trend lookahead bias. The retrospective trend overlay labeled movement bars from `movement.start`, although the movement was not known until `movement.start_conf`. Backtests now start trend regimes only at confirmation timestamps.
+
+The causal full-history OOS period was 2025-02-08 14:00 through 2025-07-30 15:00. Buy-and-hold returned 22.80% with a -24.81% maximum drawdown.
+
+### Causal entry-only, long/short
+
+| Position size | OOS return | Max drawdown | Completed trades | Win rate | Profit factor | Profitable folds |
+|---:|---:|---:|---:|---:|---:|---:|
+| 50% | 18.44% | -12.88% | 17 | 58.8% | 2.67 | 3/3 |
+| 75% | 27.67% | -18.59% | 17 | 58.8% | 2.67 | 3/3 |
+| 100% | 36.85% | -23.88% | 17 | 58.8% | 2.67 | 3/3 |
+
+The 75% long/short configuration exceeded full buy-and-hold by 4.87 percentage points with lower drawdown. The 100% configuration exceeded it by 14.05 percentage points with similar drawdown. Fifteen exits were causal trend/signal reversals, one was a stop loss, and one was the period end. Average holding time was 232.5 hours and maximum holding time was 1,065 hours.
+
+### Causal entry-only, long-only
+
+| Position size | OOS return | Max drawdown | Completed trades | Win rate | Profit factor | Profitable folds |
+|---:|---:|---:|---:|---:|---:|---:|
+| 50% | 14.21% | -7.58% | 9 | 44.4% | 2.71 | 2/3 |
+| 75% | 20.93% | -11.24% | 9 | 44.4% | 2.69 | 2/3 |
+| 100% | 27.37% | -14.82% | 9 | 44.4% | 2.68 | 2/3 |
+
+Long-only reduced drawdown but had fewer trades and one negative validation fold. The causal 75% long/short policy is currently the stronger paper-test candidate.
 
 ## Web UI Setting Coverage
 
@@ -204,7 +246,7 @@ This correctly rejected:
 
 | Mode | Data | Model / macro | Best observed result | Trade evidence | Qualified behavior |
 |---|---|---|---:|---|---|
-| Combined | BTC/USD 1h | `btc_usd_1h_prod` | 4.36% vs 11.75% hold after held-regime correction | 70 complete exits | No |
+| Combined entry-only | BTC/USD 1h | `btc_usd_1h_prod` | 27.67% at 75% size vs 22.80% hold | 17 causal trades, 3/3 profitable folds | Paper-test candidate |
 | Kronos only | BTC/USD 1h | `btc_usd_1h_prod` | Approximately -1.04% best | Up to 398 exits | No |
 | Trend only | BTC/USD 1h | None | 20.72% vs 9.51% hold | Only 5 exits; >=10-exit variants underperformed | No |
 | Multi-Timeframe | BTC/USD 1h | BTC/USD 1d macro | 10.94% vs 9.51% hold | Only 3 exits, 1 profitable fold | No |
@@ -222,10 +264,10 @@ The following still require separate experiments:
 7. Fee and slippage stress grids.
 8. Broader macro period, extension, and minimum-bar grids.
 9. Alternative train ratios and more rolling market-regime windows.
-10. Full-history runs beyond the most recent 5,000 hourly bars.
+10. Full-history confirmation on additional seeds, thresholds, models, and market regimes.
 
 ## Current Conclusion
 
 The request to cover every major category was met, but the executed search was targeted rather than exhaustive. It is incorrect to claim that every Web UI value, model, dataset, and timeframe was tested.
 
-Within the tested 1h model/data set, no mode currently has a qualified behavior after correcting Combined to use held trend regimes. Combined now has adequate trade activity but materially underperforms buy-and-hold. The next evidence-producing work is matched 15m and 1d model/data evaluation, longer regime coverage, and reconsideration of how Kronos forecast paths are converted into directional signals—not relaxing ranking gates or selecting low-trade high-return configurations.
+Within the tested 1h model/data set, continuous-confirmation Combined overtrades and underperforms. Causal entry-only Combined is materially stronger: the 75% long/short configuration returned 27.67% versus 22.80% buy-and-hold with lower drawdown and 3/3 profitable folds across 17 completed trades. This is sufficient for paper testing, not live capital. The next evidence-producing work is confirmation across additional thresholds and random seeds, matched 15m and 1d models, and a fresh untouched holdout period.
