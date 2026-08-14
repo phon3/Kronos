@@ -275,13 +275,21 @@ def _metric_columns(prefix: str, metrics: dict) -> dict:
     return {f"{prefix}_{key}": metrics.get(key) for key in keys}
 
 
-def _score_row(row: dict, rank_by: str, min_trades: int, target_trades: int = 30) -> float:
+def _score_row(
+    row: dict,
+    rank_by: str,
+    min_trades: int,
+    target_trades: int = 30,
+    min_excess_return: float = 0,
+) -> float:
     trades = row.get("oos_total_trades", 0) or 0
     if trades < min_trades:
         return float("-inf")
     sharpe = row.get("oos_sharpe_ratio", 0) or 0
     total_return = row.get("oos_total_return", 0) or 0
     benchmark_return = row.get("oos_buy_hold_return", 0) or 0
+    if total_return - benchmark_return < min_excess_return:
+        return float("-inf")
     drawdown = abs(row.get("oos_max_drawdown", 0) or 0)
     if not all(np.isfinite(value) for value in (sharpe, total_return, benchmark_return, drawdown)):
         return float("-inf")
@@ -396,6 +404,7 @@ def run_optimizer(
     rank_by: str = "composite",
     min_trades: int = 10,
     target_trades: int = 30,
+    min_excess_return: float = 0,
     validation_folds: int = 3,
     train_ratio: float = 0.7,
     initial_capital: float = 100_000,
@@ -533,7 +542,13 @@ def run_optimizer(
                 row["oos_excess_return"] = row["oos_total_return"] - row["oos_buy_hold_return"]
                 row["trade_confidence"] = min(1.0, np.sqrt(row["oos_total_trades"] / max(target_trades, 1)))
                 row["sharpe_stability_gap"] = abs(row["oos_sharpe_ratio"] - row["is_sharpe_ratio"])
-                row["score"] = _score_row(row, rank_by, min_trades, target_trades=target_trades)
+                row["score"] = _score_row(
+                    row,
+                    rank_by,
+                    min_trades,
+                    target_trades=target_trades,
+                    min_excess_return=min_excess_return,
+                )
                 row["status"] = "valid" if np.isfinite(row["score"]) else "filtered"
             except Exception as error:
                 row.update(score=float("-inf"), status="error", error=str(error))
@@ -602,6 +617,7 @@ def main():
     parser.add_argument("--rank-by", choices=["composite", "sharpe", "return", "calmar"], default="composite")
     parser.add_argument("--min-trades", type=int, default=10)
     parser.add_argument("--target-trades", type=int, default=30)
+    parser.add_argument("--min-excess-return", type=float, default=0)
     parser.add_argument("--validation-folds", type=int, default=3)
     parser.add_argument("--train-ratio", type=float, default=0.7)
     parser.add_argument("--capital", type=float, default=100_000)
@@ -651,6 +667,7 @@ def main():
         rank_by=args.rank_by,
         min_trades=args.min_trades,
         target_trades=args.target_trades,
+        min_excess_return=args.min_excess_return,
         validation_folds=args.validation_folds,
         train_ratio=args.train_ratio,
         initial_capital=args.capital,

@@ -335,7 +335,7 @@ Each run writes:
 - `top_candidates.csv`: ranked top 3/5 configurations
 - `live_test_candidates.json`: machine-readable settings and metrics for the live-testing process
 
-Use `--rank-by composite` (default) for confidence-adjusted ranking. It rewards OOS excess return over buy-and-hold and profitable validation folds while penalizing drawdown, low trade counts, negative worst-fold returns, and IS/OOS Sharpe instability. Alternatives are `sharpe`, `return`, and `calmar`. Standard and exhaustive grids are protected by `--max-combinations`; raise that limit explicitly only after reviewing `--dry-run` output.
+Use `--rank-by composite` (default) for confidence-adjusted ranking. By default, candidates must outperform buy-and-hold OOS. The score rewards excess return and profitable validation folds while penalizing drawdown, low trade counts, negative worst-fold returns, and IS/OOS Sharpe instability. Adjust the benchmark gate with `--min-excess-return`. Alternatives are `sharpe`, `return`, and `calmar`. Standard and exhaustive grids are protected by `--max-combinations`; raise that limit explicitly only after reviewing `--dry-run` output.
 
 ### 3.7 Historical sweep results
 

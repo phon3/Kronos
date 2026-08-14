@@ -423,7 +423,7 @@ def test_optimizer_composite_rewards_excess_return_and_trade_confidence():
     underperforming = {**base, "oos_buy_hold_return": 0.20, "oos_total_trades": 30}
 
     assert _score_row(high_confidence, "composite", 10) > _score_row(low_confidence, "composite", 10)
-    assert _score_row(high_confidence, "composite", 10) > _score_row(underperforming, "composite", 10)
+    assert _score_row(underperforming, "composite", 10) == float("-inf")
 
 
 def test_optimizer_dry_run_reports_large_grid_without_loading_data():
@@ -479,6 +479,7 @@ def test_optimizer_exports_top_live_candidates(sample_kronos_csv, tmp_path):
         grid_profile="quick",
         top_n=3,
         min_trades=0,
+        min_excess_return=-10,
         max_data_rows=200,
         grid_overrides={
             "prd": [10],
