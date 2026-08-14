@@ -21,6 +21,28 @@ The trustworthy final experiments used:
 
 No trustworthy final optimizer run has compared `btc_usd_15m_prod`, `btc_usd_1h_prod`, and `btc_usd_1d_prod`. There is not yet an evidence-based best timeframe or best production model.
 
+## Chart and Backtest Data Reconciliation
+
+A visually bearish chart supplied for May 5 through early June showed BTC falling from approximately $83,000 to $63,000. That is not the same period/feed as the Coinbase CSV used by these optimizer runs.
+
+The exact `BTC_USD_1h.csv` values used by the optimizer were:
+
+### May 5–May 29, 2025
+
+- First close: $94,721.18
+- Last close: $105,572.58
+- Return: +11.46%
+- Period high: $112,000.00
+- Period low: $93,363.28
+
+### May 5–June 5, 2025
+
+- First close: $94,721.18
+- Last close: $101,570.20
+- Return: +7.23%
+
+The screenshot therefore represents a different year, market feed, instrument, or date range. Trend labels and trade expectations from that chart cannot be compared directly with the May 2025 Coinbase backtest. Future chart comparisons must include year, timezone, timeframe, symbol, and source.
+
 ## Combined Confirmation Correction
 
 The initial Combined implementation confirmed Kronos only on raw nonzero trend-event bars. It ignored the held trend `position` that carries the larger regime through neutral bars. This contradicted the intended rule that confirmation remains active until trend reversal.
