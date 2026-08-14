@@ -3,6 +3,7 @@
 import argparse
 import itertools
 import json
+from datetime import datetime, timezone
 import os
 import random
 import sys
@@ -196,6 +197,25 @@ def _grid_profile(name: str) -> dict:
     if name not in profiles:
         raise ValueError(f"Unknown grid profile: {name}")
     return profiles[name]
+
+
+def _infer_timeframe(data: pd.DataFrame) -> str:
+    if len(data) < 2:
+        return "unknown"
+    minutes = data["timestamps"].sort_values().diff().dropna().median().total_seconds() / 60
+    if minutes <= 15:
+        return "15m"
+    if minutes <= 60:
+        return "1h"
+    if minutes >= 20 * 60:
+        return "1d"
+    return f"{minutes:g}m"
+
+
+def _model_name(model_path: Optional[str]) -> Optional[str]:
+    if not model_path:
+        return None
+    return os.path.basename(os.path.dirname(os.path.dirname(os.path.normpath(model_path))))
 
 
 def _risk_grid(name: str, overrides: Optional[dict] = None) -> list[dict]:
@@ -430,6 +450,23 @@ def _export_candidates(results: pd.DataFrame, output_dir: str, top_n: int) -> pd
         })
     with open(os.path.join(output_dir, "live_test_candidates.json"), "w", encoding="utf-8") as handle:
         json.dump(records, handle, indent=2)
+    metadata_columns = [
+        "signal_mode", "data_file", "data_timeframe", "data_start", "data_end",
+        "model_name", "model_path", "model_timeframe", "macro_data_file", "macro_timeframe",
+        "evaluation_start", "evaluation_end", "oos_start", "oos_end", "split_timestamp",
+        "lookback", "pred_len", "sample_count", "max_data_rows", "seed",
+    ]
+    available_metadata = [column for column in metadata_columns if column in results.columns]
+    experiments = results[available_metadata].drop_duplicates().to_dict("records") if available_metadata else []
+    manifest = {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "result_count": len(results),
+        "qualified_result_count": len(valid),
+        "candidate_count": len(top),
+        "experiments": _json_value(experiments),
+    }
+    with open(os.path.join(output_dir, "experiment_manifest.json"), "w", encoding="utf-8") as handle:
+        json.dump(manifest, handle, indent=2)
     return top
 
 
@@ -494,6 +531,12 @@ def run_optimizer(
         raise ValueError("Backtest data must contain at least two rows")
     split_idx = max(1, min(len(data) - 1, int(len(data) * train_ratio)))
     split_timestamp = data["timestamps"].iloc[split_idx]
+    data_file = os.path.basename(data_path)
+    data_timeframe = _infer_timeframe(data)
+    data_start = data["timestamps"].iloc[0]
+    data_end = data["timestamps"].iloc[-1]
+    model_name = _model_name(model_path)
+    model_timeframe = next((tf for tf in ("15m", "1h", "1d") if model_name and f"_{tf}" in model_name), None)
 
     predictions = None
     actual = data.set_index("timestamps")[["close"]]
@@ -519,6 +562,8 @@ def run_optimizer(
         actual = data[data["timestamps"].isin(predictions.index)].set_index("timestamps")[["close"]]
 
     macro_data = None
+    macro_data_file = None
+    macro_timeframe = None
     if signal_mode == "multi_tf":
         if not macro_data_path:
             raise ValueError("macro_data_path is required for multi_tf mode")
@@ -527,6 +572,8 @@ def run_optimizer(
         macro_data = macro_data.sort_values("timestamps").reset_index(drop=True)
         if max_data_rows is not None:
             macro_data = macro_data.tail(max_data_rows).reset_index(drop=True)
+        macro_data_file = os.path.basename(macro_data_path)
+        macro_timeframe = _infer_timeframe(macro_data)
 
     trend_cache = {}
     kronos_cache = {}
@@ -561,12 +608,29 @@ def run_optimizer(
                 macro_prd=signal_config["macro_prd"], macro_ext_break=signal_config["macro_ext_break"],
                 macro_ext_limit=signal_config["macro_ext_limit"], macro_min_bars=signal_config["macro_min_bars"],
             )
+        evaluation_start = signals.index.min() if len(signals) else None
+        evaluation_end = signals.index.max() if len(signals) else None
+        oos_signals = signals[signals.index >= split_timestamp] if isinstance(signals.index, pd.DatetimeIndex) else signals
+        oos_start = oos_signals.index.min() if len(oos_signals) else None
+        oos_end = oos_signals.index.max() if len(oos_signals) else None
         signature = json.dumps(signal_config, sort_keys=True)
         for risk in risk_configs:
             row = {
                 "signal_mode": signal_mode,
                 "data_path": data_path,
+                "data_file": data_file,
+                "data_timeframe": data_timeframe,
+                "data_start": str(data_start),
+                "data_end": str(data_end),
+                "model_name": model_name,
                 "model_path": model_path,
+                "model_timeframe": model_timeframe,
+                "macro_data_file": macro_data_file,
+                "macro_timeframe": macro_timeframe,
+                "evaluation_start": str(evaluation_start) if evaluation_start is not None else None,
+                "evaluation_end": str(evaluation_end) if evaluation_end is not None else None,
+                "oos_start": str(oos_start) if oos_start is not None else None,
+                "oos_end": str(oos_end) if oos_end is not None else None,
                 "lookback": lookback,
                 "pred_len": pred_len,
                 "sample_count": sample_count,

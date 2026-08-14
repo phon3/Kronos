@@ -559,6 +559,8 @@ def test_optimizer_exports_empty_candidates_when_all_results_filtered(tmp_path):
     assert (tmp_path / "all_results.csv").exists()
     assert (tmp_path / "top_candidates.csv").exists()
     assert json.loads((tmp_path / "live_test_candidates.json").read_text()) == []
+    manifest = json.loads((tmp_path / "experiment_manifest.json").read_text())
+    assert manifest["candidate_count"] == 0
 
 
 def test_optimizer_exports_top_live_candidates(sample_kronos_csv, tmp_path):
@@ -580,7 +582,12 @@ def test_optimizer_exports_top_live_candidates(sample_kronos_csv, tmp_path):
     )
 
     assert len(results) == 4
-    assert {"oos_excess_return", "trade_confidence", "oos_worst_fold_return"}.issubset(results.columns)
+    assert {
+        "data_file", "data_timeframe", "data_start", "data_end", "evaluation_start",
+        "evaluation_end", "oos_start", "oos_end", "oos_excess_return",
+        "trade_confidence", "oos_worst_fold_return",
+    }.issubset(results.columns)
+    assert results["data_timeframe"].eq("1h").all()
     assert 1 <= len(top) <= 3
     assert (tmp_path / "all_results.csv").exists()
     assert (tmp_path / "top_candidates.csv").exists()
