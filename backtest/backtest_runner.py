@@ -1,5 +1,7 @@
 """Backtest runner — loads fine-tuned Kronos model, generates predictions, runs backtest."""
 
+from __future__ import annotations
+
 import argparse
 import os
 import sys
