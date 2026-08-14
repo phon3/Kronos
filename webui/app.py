@@ -1,4 +1,5 @@
 import os
+import random
 import pandas as pd
 import numpy as np
 import json
@@ -457,6 +458,7 @@ def predict():
         temperature = float(data.get('temperature', 1.0))
         top_p = float(data.get('top_p', 0.9))
         sample_count = int(data.get('sample_count', 1))
+        seed = int(data.get('seed', 123))
         
         if not file_path:
             return jsonify({'error': 'File path cannot be empty'}), 400
@@ -508,9 +510,14 @@ def predict():
                     prediction_type = f"Kronos model prediction (within selected window: first {lookback} data points for prediction, last {pred_len} data points for comparison, time span: {time_span})"
                 else:
                     # Use latest data
-                    x_df = df.iloc[:lookback][required_cols]
-                    x_timestamp = df.iloc[:lookback]['timestamps']
-                    y_timestamp = df.iloc[lookback:lookback+pred_len]['timestamps']
+                    x_df = df.iloc[-lookback:][required_cols].reset_index(drop=True)
+                    x_timestamp = df.iloc[-lookback:]['timestamps'].reset_index(drop=True)
+                    time_diff = df['timestamps'].iloc[-1] - df['timestamps'].iloc[-2]
+                    y_timestamp = pd.Series(pd.date_range(
+                        start=df['timestamps'].iloc[-1] + time_diff,
+                        periods=pred_len,
+                        freq=time_diff,
+                    ), name='timestamps')
                     prediction_type = "Kronos model prediction (latest data)"
                 
                 # Ensure timestamps are Series format, not DatetimeIndex, to avoid .dt attribute error in Kronos model
@@ -519,12 +526,20 @@ def predict():
                 if isinstance(y_timestamp, pd.DatetimeIndex):
                     y_timestamp = pd.Series(y_timestamp, name='timestamps')
                 
+                random.seed(seed)
+                np.random.seed(seed)
+                import torch
+                torch.manual_seed(seed)
+                if torch.cuda.is_available():
+                    torch.cuda.manual_seed_all(seed)
+
                 pred_df = predictor.predict(
                     df=x_df,
                     x_timestamp=x_timestamp,
                     y_timestamp=y_timestamp,
                     pred_len=pred_len,
                     T=temperature,
+                    top_k=0,
                     top_p=top_p,
                     sample_count=sample_count
                 )
@@ -562,21 +577,6 @@ def predict():
                         'volume': float(row['volume']) if 'volume' in row else 0,
                         'amount': float(row['amount']) if 'amount' in row else 0
                     })
-        else:  # Latest data
-            # Prediction uses first 400 data points
-            # Actual data should be 120 data points after first 400 data points
-            if len(df) >= lookback + pred_len:
-                actual_df = df.iloc[lookback:lookback+pred_len]
-                for i, (_, row) in enumerate(actual_df.iterrows()):
-                    actual_data.append({
-                        'timestamp': row['timestamps'].isoformat(),
-                        'open': float(row['open']),
-                        'high': float(row['high']),
-                        'low': float(row['low']),
-                        'close': float(row['close']),
-                        'volume': float(row['volume']) if 'volume' in row else 0,
-                        'amount': float(row['amount']) if 'amount' in row else 0
-                    })
         
         # Create chart - pass historical data start position
         if start_date:
@@ -585,8 +585,8 @@ def predict():
             mask = df['timestamps'] >= start_dt
             historical_start_idx = df[mask].index[0] if len(df[mask]) > 0 else 0
         else:
-            # Latest data: start from beginning
-            historical_start_idx = 0
+            # Latest data: start from the final lookback window
+            historical_start_idx = len(df) - lookback
         
         chart_json = create_prediction_chart(df, pred_df, lookback, pred_len, actual_df, historical_start_idx)
         
@@ -646,7 +646,9 @@ def predict():
                     'pred_len': pred_len,
                     'temperature': temperature,
                     'top_p': top_p,
+                    'top_k': 0,
                     'sample_count': sample_count,
+                    'seed': seed,
                     'start_date': start_date if start_date else 'latest'
                 }
             )

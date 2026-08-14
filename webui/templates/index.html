@@ -296,6 +296,13 @@
                 <div style="margin-top:20px">
                     <h2 style="margin-top:0">Prediction Parameters</h2>
                     <div class="form-group">
+                        <label>Prediction Preset</label>
+                        <select id="prediction-preset" onchange="applyPredictionPreset(this.value)">
+                            <option value="custom">Custom</option>
+                            <option value="paper-1h">1h Paper Candidate</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
                         <label>Lookback Window</label>
                         <input type="number" id="lookback" value="400" min="10" max="2048">
                     </div>
@@ -318,6 +325,10 @@
                     <div class="form-group">
                         <label>Sample Count</label>
                         <input type="number" id="sample-count" value="1" min="1" max="20">
+                    </div>
+                    <div class="form-group">
+                        <label>Random Seed</label>
+                        <input type="number" id="prediction-seed" value="123" min="0">
                     </div>
                     <div class="form-group">
                         <label>Start Date (optional)</label>
@@ -623,6 +634,33 @@ function onModelSelect() {
     }
 }
 
+function applyPredictionPreset(name) {
+    if (name !== 'paper-1h') return;
+    const modelSelect = document.getElementById('model-select');
+    const modelKey = 'finetuned-btc_usd_1h_prod';
+    if (![...modelSelect.options].some(option => option.value === modelKey)) {
+        showStatus('model-status', 'error', 'The btc_usd_1h_prod model is not available locally');
+        document.getElementById('prediction-preset').value = 'custom';
+        return;
+    }
+    modelSelect.value = modelKey;
+    document.getElementById('device-select').value = 'mps';
+    const dataSelect = document.getElementById('data-select');
+    const dataOption = [...dataSelect.options].find(option => option.text.includes('BTC_USD_1h.csv'));
+    if (dataOption) dataSelect.value = dataOption.value;
+    document.getElementById('lookback').value = 256;
+    document.getElementById('pred-len').value = 48;
+    document.getElementById('temperature').value = 0.6;
+    document.getElementById('temperature-value').textContent = '0.6';
+    document.getElementById('top-p').value = 0.9;
+    document.getElementById('top-p-value').textContent = '0.9';
+    document.getElementById('sample-count').value = 1;
+    document.getElementById('prediction-seed').value = 123;
+    document.getElementById('start-date').value = '';
+    loadDataFile();
+    showStatus('model-status', 'info', 'Paper preset applied. Load the model before predicting.');
+}
+
 // Load model
 async function loadModel() {
     const modelKey = document.getElementById('model-select').value;
@@ -682,6 +720,7 @@ async function runPrediction() {
         temperature: parseFloat(document.getElementById('temperature').value),
         top_p: parseFloat(document.getElementById('top-p').value),
         sample_count: parseInt(document.getElementById('sample-count').value),
+        seed: parseInt(document.getElementById('prediction-seed').value),
         start_date: document.getElementById('start-date').value || null
     };
     

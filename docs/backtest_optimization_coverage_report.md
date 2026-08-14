@@ -251,6 +251,87 @@ This correctly rejected:
 | Trend only | BTC/USD 1h | None | 20.72% vs 9.51% hold | Only 5 exits; >=10-exit variants underperformed | No |
 | Multi-Timeframe | BTC/USD 1h | BTC/USD 1d macro | 10.94% vs 9.51% hold | Only 3 exits, 1 profitable fold | No |
 
+## Paper Candidate Deployment Specification
+
+### Validated reproduction artifacts
+
+Use the exact local production artifacts below. The local files match the GPU rental byte-for-byte.
+
+| Artifact | Path | SHA-256 |
+|---|---|---|
+| Model | `finetune_csv/finetuned/btc_usd_1h_prod/basemodel/best_model/model.safetensors` | `a95496971aebe1e3221e30d898b5b77bda04f22466766feeeefe9b68c7086557` |
+| Tokenizer | `finetune_csv/finetuned/btc_usd_1h_prod/tokenizer/best_model/model.safetensors` | `943ed96abaa427a78caaee802de1b97b42f4f11fd778df84ea9e39b7dc178df4` |
+| Historical data | `data/BTC_USD_1h.csv` | `411d35a182ba6be87827f566c5a692d554946e784b97f7b0f66ae34c03716cea` |
+| Training config | `finetune_csv/configs/config_btc_usd_1h_prod.yaml` | `93c696fd51c03a923b4ae5a362c45049c9afe7791fee6de986a4a6422fda3314` |
+
+Do not substitute `btc_usd_1h_gpu`; its model and tokenizer hashes differ from the tested production artifacts.
+
+### Model training identity
+
+- Base architecture: `NeoQuasar/Kronos-small`
+- Model size: approximately 24.7M parameters
+- Training market: Coinbase BTC/USD
+- Training timeframe: 1h
+- Training lookback: 512
+- Training target: 48
+- Maximum context: 512
+- Training seed: 42
+- Production experiment: `btc_usd_1h_prod`
+
+### Predict configuration
+
+Use the Web UI `1h Paper Candidate` prediction preset or set:
+
+| Setting | Value |
+|---|---|
+| Model | Fine-tuned `btc_usd_1h_prod` |
+| Data | Coinbase BTC/USD 1h candles |
+| Device on Mac | MPS |
+| Lookback | 256 |
+| Prediction length | 48 |
+| Temperature | 0.6 |
+| Top-k | 0 (disabled) |
+| Top-p | 0.9 |
+| Sample count | 1 |
+| Random seed | 123 |
+| Start date | Empty for the latest available window |
+
+The Predict tab generates a 48-hour forecast path. It does not itself execute paper trades.
+
+### Paper execution policy
+
+| Setting | Value |
+|---|---|
+| Mode | Combined entry-only |
+| Direction | Long/short |
+| Position size | 75% |
+| Signal threshold | 0.0015 (0.15%) |
+| Trend period | 60 bars |
+| Trend break extension | 0.03 |
+| Trend limit extension | 0.01 |
+| Trend minimum bars | 3 |
+| Stop loss | 0.08 (8%) |
+| Take profit | None |
+| Loss multiplier | 1.0 |
+| Daily loss limit | None during reproduction; add only after separate validation |
+| Entry | Kronos direction agrees with confirmed held trend regime |
+| Exit | Confirmed trend reversal, 8% stop, or end of test; Kronos flips do not exit |
+
+### Historical versus current data
+
+The validated historical CSV ends on 2025-07-31. It must remain unchanged for reproducibility.
+
+For current paper prediction, fetch a separate file rather than overwriting it:
+
+```bash
+python -m data_ingestion.fetch_data \
+  --source coinbase --symbol BTC/USD --timeframe 1h \
+  --start 2025-08-01 --end 2026-08-14 \
+  --out ./data/BTC_USD_1h_live.csv --validate
+```
+
+Select `BTC_USD_1h_live.csv` in Predict. The 2026 candles are forward, out-of-sample paper data and were not part of the reported backtest. Record each prediction timestamp, seed, model hash, forecast, entry/exit decision, fill, fee, and PnL.
+
 ## What Was Not Covered
 
 The following still require separate experiments:

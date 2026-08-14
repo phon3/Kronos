@@ -377,6 +377,48 @@ def test_generate_predictions_preserves_disabled_top_k():
     assert predictions["prediction_window"].tolist() == [0] * 5 + [1] * 5
 
 
+def test_webui_latest_prediction_uses_final_window_and_seed(monkeypatch, sample_kronos_csv):
+    source = pd.read_csv(sample_kronos_csv, parse_dates=["timestamps"])
+    captured = {}
+
+    class Predictor:
+        def predict(self, **kwargs):
+            captured.update(kwargs)
+            captured["random_value"] = np.random.randint(0, 1_000_000)
+            rows = kwargs["pred_len"]
+            return pd.DataFrame({
+                "open": np.ones(rows),
+                "high": np.ones(rows),
+                "low": np.ones(rows),
+                "close": np.ones(rows),
+                "volume": np.ones(rows),
+            })
+
+    monkeypatch.setattr(webui_app, "MODEL_AVAILABLE", True)
+    monkeypatch.setattr(webui_app, "predictor", Predictor())
+    monkeypatch.setattr(webui_app, "create_prediction_chart", lambda *args, **kwargs: "{}")
+    monkeypatch.setattr(webui_app, "save_prediction_results", lambda **kwargs: None)
+
+    response = app.test_client().post("/api/predict", json={
+        "file_path": sample_kronos_csv,
+        "lookback": 10,
+        "pred_len": 5,
+        "temperature": 0.6,
+        "top_p": 0.9,
+        "sample_count": 1,
+        "seed": 123,
+    })
+
+    assert response.status_code == 200
+    assert captured["df"]["close"].iloc[-1] == pytest.approx(source["close"].iloc[-1])
+    assert captured["x_timestamp"].iloc[-1] == source["timestamps"].iloc[-1]
+    assert captured["y_timestamp"].iloc[0] > source["timestamps"].iloc[-1]
+    assert captured["top_k"] == 0
+    assert captured["T"] == 0.6
+    assert captured["random_value"] == np.random.RandomState(123).randint(0, 1_000_000)
+    assert response.get_json()["actual_data"] == []
+
+
 def test_webui_rejects_stale_backtest_client():
     response = app.test_client().post("/api/backtest", json={"data_path": "unused.csv"})
 
