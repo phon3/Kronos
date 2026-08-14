@@ -1,5 +1,6 @@
 """Tests for the data ingestion and backtest pipeline."""
 
+import json
 import os
 import sys
 import tempfile
@@ -15,6 +16,10 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from data_ingestion.data_validator import DataValidator
 from data_ingestion.converters import CSVConverter
 from backtest.crypto_backtest import CryptoBacktester
+from backtest import backtest_runner
+from backtest.param_sweep import _combine_signals, _score_row, run_optimizer
+import webui.app as webui_app
+from webui.app import UI_VERSION, app
 
 
 # --- Fixtures ---
@@ -285,3 +290,130 @@ class TestCryptoBacktester:
         assert "position" in signals.columns
         assert len(signals) == n
         assert signals["trend_signal"].isin([0, 1, -1]).all()
+
+
+def test_webui_rejects_stale_backtest_client():
+    response = app.test_client().post("/api/backtest", json={"data_path": "unused.csv"})
+
+    assert response.status_code == 409
+    assert response.get_json()["code"] == "STALE_UI"
+    assert response.get_json()["ui_version"] == UI_VERSION
+
+
+def test_webui_rejects_model_data_timeframe_mismatch(monkeypatch):
+    monkeypatch.setattr(webui_app, "scan_finetuned_models", lambda: {
+        "finetuned-btc_usd_1h_test": {
+            "name": "Test 1h model",
+            "model_path": "unused-model",
+            "tokenizer_path": "unused-tokenizer",
+            "context_length": 512,
+            "params": "test",
+            "description": "test",
+            "type": "finetuned",
+        }
+    })
+
+    response = app.test_client().post("/api/backtest", json={
+        "ui_version": UI_VERSION,
+        "data_path": "BTC_USD_1d.csv",
+        "signal_mode": "combined",
+        "model_key": "finetuned-btc_usd_1h_test",
+        "max_data_rows": 560,
+    })
+
+    assert response.status_code == 400
+    assert response.get_json()["code"] == "TIMEFRAME_MISMATCH"
+
+
+def test_trend_backtest_limits_input_rows(monkeypatch, tmp_path):
+    rows = 1000
+    closes = np.linspace(100, 200, rows)
+    data = pd.DataFrame({
+        "timestamps": pd.date_range("2024-01-01", periods=rows, freq="15min"),
+        "open": closes,
+        "high": closes + 1,
+        "low": closes - 1,
+        "close": closes,
+    })
+    received = {}
+
+    monkeypatch.setattr(backtest_runner.pd, "read_csv", lambda _: data.copy())
+    monkeypatch.setattr(
+        backtest_runner.CryptoBacktester,
+        "run",
+        lambda self, **kwargs: received.update(rows=len(kwargs["full_data"])) or {"total_return": 0},
+    )
+    monkeypatch.setattr(backtest_runner.ReportGenerator, "generate_report", lambda self, **kwargs: None)
+
+    backtest_runner.run_backtest(
+        model_path="",
+        tokenizer_path="",
+        data_path="unused.csv",
+        output_dir=str(tmp_path),
+        signal_mode="trend",
+        max_data_rows=120,
+    )
+
+    assert received["rows"] == 120
+
+
+def test_combined_optimizer_closes_when_confirmation_disappears():
+    index = pd.date_range("2024-01-01", periods=3, freq="1h")
+    kronos = pd.DataFrame({"actual_close": [100, 101, 102], "position": [1, 1, 1]}, index=index)
+    trend = pd.DataFrame({"trend_signal": [1, 0, 1]}, index=index)
+
+    combined = _combine_signals(kronos, trend, allow_short=True)
+
+    assert combined["position"].tolist() == [1, 0, 1]
+
+
+def test_optimizer_score_filters_low_trade_candidates():
+    row = {
+        "is_sharpe_ratio": 1.0,
+        "oos_sharpe_ratio": 1.2,
+        "oos_total_return": 0.10,
+        "oos_max_drawdown": -0.05,
+        "oos_total_trades": 2,
+    }
+
+    assert _score_row(row, "composite", min_trades=3) == float("-inf")
+    assert np.isfinite(_score_row(row, "composite", min_trades=2))
+
+
+def test_optimizer_dry_run_reports_large_grid_without_loading_data():
+    results, top = run_optimizer(
+        data_path="unused.csv",
+        signal_mode="trend",
+        grid_profile="exhaustive",
+        max_combinations=1,
+        dry_run=True,
+    )
+
+    assert results.empty
+    assert top.empty
+
+
+def test_optimizer_exports_top_live_candidates(sample_kronos_csv, tmp_path):
+    results, top = run_optimizer(
+        data_path=sample_kronos_csv,
+        output_dir=str(tmp_path),
+        signal_mode="trend",
+        grid_profile="quick",
+        top_n=3,
+        min_trades=0,
+        max_data_rows=200,
+        grid_overrides={
+            "prd": [10],
+            "ext_break": [0.03],
+            "ext_limit": [0.01],
+            "min_bars": [3],
+        },
+    )
+
+    assert len(results) == 4
+    assert 1 <= len(top) <= 3
+    assert (tmp_path / "all_results.csv").exists()
+    assert (tmp_path / "top_candidates.csv").exists()
+    candidates = json.loads((tmp_path / "live_test_candidates.json").read_text())
+    assert [candidate["rank"] for candidate in candidates] == list(range(1, len(candidates) + 1))
+    assert all("settings" in candidate and "metrics" in candidate for candidate in candidates)

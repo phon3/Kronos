@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Kronos — Financial Prediction & Backtesting</title>
-    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+    <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
     <style>
         :root {
@@ -153,6 +153,17 @@
         .metric-card .value { font-size: 1.3rem; font-weight: 700; margin-top: 4px; }
         .metric-card .value.positive { color: var(--green); }
         .metric-card .value.negative { color: var(--red); }
+        .result-note {
+            display: none;
+            margin-bottom: 14px;
+            padding: 10px 12px;
+            border: 1px solid var(--orange);
+            border-radius: 6px;
+            background: rgba(210,153,34,0.12);
+            color: var(--orange);
+            font-size: 0.8rem;
+            line-height: 1.4;
+        }
         .badge {
             display: inline-block;
             padding: 2px 8px;
@@ -185,6 +196,56 @@
         }
         .deeptrade-label { color: var(--purple); font-size: 0.8rem; font-weight: 700; margin-bottom: 8px; }
         .hint { font-size: 0.75rem; color: var(--text-muted); margin-top: 4px; }
+        .help-tip {
+            position: relative;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 15px;
+            height: 15px;
+            margin-left: 5px;
+            border: 1px solid var(--text-muted);
+            border-radius: 50%;
+            color: var(--text-muted);
+            font-size: 0.65rem;
+            font-weight: 700;
+            cursor: help;
+            vertical-align: 1px;
+        }
+        .help-tip::after {
+            content: attr(data-tooltip);
+            position: absolute;
+            left: 50%;
+            bottom: calc(100% + 8px);
+            width: 250px;
+            padding: 9px 11px;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            background: #21262d;
+            color: var(--text);
+            font-size: 0.75rem;
+            font-weight: 400;
+            line-height: 1.4;
+            text-align: left;
+            box-shadow: 0 8px 24px rgba(0,0,0,0.35);
+            opacity: 0;
+            pointer-events: none;
+            transform: translate(-50%, 4px);
+            transition: opacity 0.15s, transform 0.15s;
+            z-index: 20;
+        }
+        .help-tip:hover::after, .help-tip:focus::after {
+            opacity: 1;
+            transform: translate(-50%, 0);
+        }
+        .preset-panel {
+            margin-bottom: 18px;
+            padding: 12px;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            background: var(--bg-input);
+        }
+        .preset-panel .form-group:last-child { margin-bottom: 0; }
     </style>
 </head>
 <body>
@@ -193,7 +254,7 @@
         <span class="logo">📈</span>
         <div>
             <h1>Kronos</h1>
-            <div class="subtitle">Financial Prediction & Backtesting Platform</div>
+            <div class="subtitle">Financial Prediction & Backtesting Platform · UI v2.1</div>
         </div>
     </div>
 
@@ -283,9 +344,43 @@
         <div class="grid">
             <div class="card">
                 <h2>Backtest Configuration</h2>
+                <div class="preset-panel">
+                    <div class="form-group">
+                        <label>Strategy Preset <span class="help-tip" tabindex="0" data-tooltip="Sets the signal mode and trend sensitivity together. You can adjust any field afterward.">?</span></label>
+                        <select id="bt-strategy-preset" onchange="applyStrategyPreset(this.value)">
+                            <option value="custom" selected>Custom</option>
+                            <option value="trend-responsive">Responsive Trend</option>
+                            <option value="trend-stable">Stable Trend</option>
+                            <option value="kronos">Kronos Only</option>
+                            <option value="combined">Combined Confirmation</option>
+                            <option value="multi_tf">Multi-Timeframe</option>
+                        </select>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label>Run Scope <span class="help-tip" tabindex="0" data-tooltip="Limits historical bars for every mode and model samples for Kronos modes. Larger scopes take longer.">?</span></label>
+                            <select id="bt-scope-preset" onchange="applyScopePreset(this.value)">
+                                <option value="quick">Smoke Test (1 window)</option>
+                                <option value="standard" selected>Standard (10 windows)</option>
+                                <option value="thorough">Thorough (32 windows × 3)</option>
+                                <option value="custom">Custom</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>Risk Profile <span class="help-tip" tabindex="0" data-tooltip="Sets position sizing, exits, and daily loss protection without changing the signal strategy.">?</span></label>
+                            <select id="bt-risk-preset" onchange="applyRiskPreset(this.value)">
+                                <option value="conservative">Conservative</option>
+                                <option value="balanced">Balanced</option>
+                                <option value="aggressive">Aggressive</option>
+                                <option value="deeptrade">DeepTrade Scaling</option>
+                                <option value="custom" selected>Custom</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
                 <div class="form-group">
-                    <label>Signal Mode</label>
-                    <select id="bt-signal-mode" onchange="onBtSignalModeChange()">
+                    <label>Signal Mode <span class="help-tip" tabindex="0" data-tooltip="Chooses the signal source. Combined requires Kronos and trend to agree; Multi-Timeframe filters entries using higher-timeframe trend.">?</span></label>
+                    <select id="bt-signal-mode" onchange="onBtSignalModeChange(); markPresetCustom('bt-strategy-preset')">
                         <option value="trend">Trend (no model needed)</option>
                         <option value="kronos">Kronos (model predictions)</option>
                         <option value="combined">Combined (Kronos + Trend)</option>
@@ -295,62 +390,95 @@
 
                 <div id="bt-model-section" style="display:none">
                     <div class="form-group">
-                        <label>Model</label>
+                        <label>Model <span class="help-tip" tabindex="0" data-tooltip="The pretrained or fine-tuned Kronos checkpoint used to generate forecast signals.">?</span></label>
                         <select id="bt-model-select"></select>
                     </div>
+                    <div class="form-group">
+                        <label>Device <span class="help-tip" tabindex="0" data-tooltip="Where inference runs. Use MPS on Apple Silicon, CUDA on NVIDIA systems, and CPU only as a fallback.">?</span></label>
+                        <select id="bt-device">
+                            <option value="mps" selected>MPS (Apple Silicon)</option>
+                            <option value="cpu">CPU</option>
+                            <option value="cuda">CUDA (GPU)</option>
+                        </select>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label>Samples <span class="help-tip" tabindex="0" data-tooltip="Forecast samples averaged per window. More samples can stabilize predictions but multiply inference time.">?</span></label>
+                            <input type="number" id="bt-sample-count" value="1" min="1" max="20">
+                        </div>
+                        <div class="form-group">
+                            <label>Signal Threshold <span class="help-tip" tabindex="0" data-tooltip="Minimum predicted price change needed for a Kronos signal. 0.005 means 0.5%; lower values create more trades and noise.">?</span></label>
+                            <input type="number" id="bt-threshold" value="0.005" min="0.0001" max="1" step="0.001">
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label>Lookback <span class="help-tip" tabindex="0" data-tooltip="Historical candles supplied to each forecast. Small/base models support up to 512; longer context increases compute.">?</span></label>
+                            <input type="number" id="bt-lookback" value="512" min="10" max="2048">
+                        </div>
+                        <div class="form-group">
+                            <label>Prediction Length <span class="help-tip" tabindex="0" data-tooltip="Candles forecast per window. Shorter horizons create more windows and react faster; longer horizons reduce window count.">?</span></label>
+                            <input type="number" id="bt-pred-len" value="48" min="1" max="500">
+                        </div>
+                    </div>
+                    <div class="hint">Model runs use the most recent bars. Increase bars or samples only after a smaller run succeeds.</div>
                 </div>
 
                 <div class="form-group">
-                    <label>Data File</label>
+                    <label>Data File <span class="help-tip" tabindex="0" data-tooltip="Primary OHLCV candle file. Match its timeframe and market to the selected model when using Kronos.">?</span></label>
                     <select id="bt-data-select"></select>
+                </div>
+                <div class="form-group">
+                    <label>Max Data Bars <span class="help-tip" tabindex="0" data-tooltip="Limits every backtest to the most recent candles. This prevents large 15-minute files from launching unbounded work.">?</span></label>
+                    <input type="number" id="bt-max-data-rows" value="1024" min="560" step="48">
                 </div>
 
                 <div id="bt-macro-section" style="display:none">
                     <div class="form-group">
-                        <label>Macro Data File (higher timeframe)</label>
+                        <label>Macro Data File <span class="help-tip" tabindex="0" data-tooltip="Higher-timeframe candles used as a directional filter, such as 1d macro data for 1h entries.">?</span></label>
                         <select id="bt-macro-select"></select>
                     </div>
                 </div>
 
                 <div class="form-group">
-                    <label>Initial Capital</label>
+                    <label>Initial Capital <span class="help-tip" tabindex="0" data-tooltip="Starting portfolio value used for position sizing and return calculations. It does not change signal generation.">?</span></label>
                     <input type="number" id="bt-capital" value="100000" min="1000">
                 </div>
 
                 <h2 style="margin-top:20px">Risk Management</h2>
                 <div class="form-row">
                     <div class="form-group">
-                        <label>Position Size</label>
+                        <label>Position Size <span class="help-tip" tabindex="0" data-tooltip="Fraction of available capital allocated per entry. 0.25 means 25%; larger values amplify both gains and losses.">?</span></label>
                         <input type="number" id="bt-position-size" value="0.25" min="0.01" max="1.0" step="0.05">
                     </div>
                     <div class="form-group">
-                        <label>Stop Loss (%)</label>
+                        <label>Stop Loss <span class="help-tip" tabindex="0" data-tooltip="Loss from entry that closes the remaining position. Enter decimals: 0.08 means 8%.">?</span></label>
                         <input type="number" id="bt-stop-loss" value="0.08" min="0.01" max="1.0" step="0.01">
                     </div>
                 </div>
                 <div class="form-group">
-                    <label>Take Profit (%) — single level</label>
+                    <label>Single Take Profit <span class="help-tip" tabindex="0" data-tooltip="Gain from entry that closes the full position. Leave empty when using multi-target exits; 0.10 means 10%.">?</span></label>
                     <input type="number" id="bt-take-profit" placeholder="e.g. 0.10" min="0.01" max="1.0" step="0.01">
                     <div class="hint">Leave empty if using multi-target below</div>
                 </div>
 
                 <div class="form-group">
-                    <label>Martingale Loss Multiplier</label>
+                    <label>Loss Multiplier <span class="help-tip" tabindex="0" data-tooltip="Scales the next position after consecutive losses. 1.0 disables escalation; values above 1 increase drawdown risk quickly.">?</span></label>
                     <input type="number" id="bt-loss-mult" value="1.0" min="1.0" max="4.0" step="0.1">
                     <div class="hint">1.0 = disabled. 1.5 = increase 50% after each loss</div>
                 </div>
 
                 <div class="collapsible deeptrade-section" onclick="toggleCollapsible(this)">
-                    <div class="deeptrade-label">🌊 DeepTrade Settings</div>
+                    <div class="deeptrade-label">DeepTrade Settings</div>
                 </div>
                 <div class="collapsible-content hidden" id="deeptrade-content">
                     <div class="form-group">
-                        <label>Multi-Target TP Levels</label>
+                        <label>Multi-Target TP Levels <span class="help-tip" tabindex="0" data-tooltip="Partial exits as gain:fraction pairs. Fractions should total 1.0; example: 0.05:0.33 exits 33% at a 5% gain.">?</span></label>
                         <input type="text" id="bt-tp-levels" placeholder="0.05:0.33,0.10:0.33,0.15:0.34">
                         <div class="hint">Format: pct:fraction,pct:fraction,...</div>
                     </div>
                     <div class="form-group">
-                        <label>Daily Loss Limit (%)</label>
+                        <label>Daily Loss Limit <span class="help-tip" tabindex="0" data-tooltip="Stops new entries for the rest of a day after this portfolio drawdown. Resets at the next day boundary.">?</span></label>
                         <input type="number" id="bt-daily-limit" placeholder="e.g. 0.03" min="0.01" max="1.0" step="0.01">
                         <div class="hint">Stops new trades after this daily drawdown</div>
                     </div>
@@ -362,21 +490,21 @@
                 <div class="collapsible-content hidden" id="trend-params-content">
                     <div class="form-row">
                         <div class="form-group">
-                            <label>Period (bars)</label>
+                            <label>Period <span class="help-tip" tabindex="0" data-tooltip="Bars used to evaluate break and limit lines. Lower values react faster; higher values favor longer trends.">?</span></label>
                             <input type="number" id="bt-trend-prd" value="60" min="5">
                         </div>
                         <div class="form-group">
-                            <label>Min Bars</label>
+                            <label>Minimum Bars <span class="help-tip" tabindex="0" data-tooltip="Minimum movement duration accepted as a trend. Higher values filter short-lived moves and reduce signal frequency.">?</span></label>
                             <input type="number" id="bt-trend-min-bars" value="5" min="1">
                         </div>
                     </div>
                     <div class="form-row">
                         <div class="form-group">
-                            <label>Ext Break</label>
+                            <label>Break Extension <span class="help-tip" tabindex="0" data-tooltip="Required break-line price extension over the trend period. Higher values tolerate wider pullbacks.">?</span></label>
                             <input type="number" id="bt-trend-ext-break" value="0.03" min="0.001" step="0.005">
                         </div>
                         <div class="form-group">
-                            <label>Ext Limit</label>
+                            <label>Limit Extension <span class="help-tip" tabindex="0" data-tooltip="Required price extension for a movement to remain active. Higher values demand stronger continuation.">?</span></label>
                             <input type="number" id="bt-trend-ext-limit" value="0.01" min="0.001" step="0.005">
                         </div>
                     </div>
@@ -384,7 +512,7 @@
 
                 <div style="margin-top:12px">
                     <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
-                        <input type="checkbox" id="bt-walk-forward"> Walk-Forward Validation
+                        <input type="checkbox" id="bt-walk-forward"> Walk-Forward Validation <span class="help-tip" tabindex="0" data-tooltip="Splits data chronologically into in-sample and out-of-sample periods to expose overfitting.">?</span>
                     </label>
                 </div>
 
@@ -393,10 +521,11 @@
 
             <div>
                 <div id="bt-status" class="status"></div>
-                <div id="bt-loading" class="loading"><div class="spinner"></div><p style="margin-top:12px">Running backtest...</p></div>
+                <div id="bt-loading" class="loading"><div class="spinner"></div><p id="bt-loading-message" style="margin-top:12px">Running backtest...</p></div>
                 <div id="bt-results" style="display:none">
                     <div class="card">
                         <h2>Results</h2>
+                        <div id="bt-diagnostics" class="result-note"></div>
                         <div id="bt-metrics" class="metrics-grid"></div>
                     </div>
                 </div>
@@ -437,6 +566,8 @@ function showLoading(id, show) {
 // Load models and data files on page load
 async function init() {
     await Promise.all([loadModels(), loadDataFiles()]);
+    bindPresetTracking();
+    onBtSignalModeChange();
 }
 
 async function loadModels() {
@@ -598,6 +729,69 @@ async function runPrediction() {
     }
 }
 
+function setBacktestValues(values) {
+    Object.entries(values).forEach(([id, value]) => {
+        const el = document.getElementById(id);
+        if (el) el.value = value;
+    });
+}
+
+function markPresetCustom(id) {
+    document.getElementById(id).value = 'custom';
+}
+
+function applyScopePreset(name) {
+    const presets = {
+        quick: {'bt-max-data-rows': 560, 'bt-sample-count': 1, 'bt-lookback': 512, 'bt-pred-len': 48},
+        standard: {'bt-max-data-rows': 1024, 'bt-sample-count': 1, 'bt-lookback': 512, 'bt-pred-len': 48},
+        thorough: {'bt-max-data-rows': 2048, 'bt-sample-count': 3, 'bt-lookback': 512, 'bt-pred-len': 48},
+    };
+    if (presets[name]) setBacktestValues(presets[name]);
+}
+
+function applyRiskPreset(name) {
+    const presets = {
+        conservative: {'bt-position-size': 0.10, 'bt-stop-loss': 0.04, 'bt-take-profit': 0.08, 'bt-loss-mult': 1.0, 'bt-tp-levels': '', 'bt-daily-limit': 0.02},
+        balanced: {'bt-position-size': 0.25, 'bt-stop-loss': 0.08, 'bt-take-profit': 0.12, 'bt-loss-mult': 1.0, 'bt-tp-levels': '', 'bt-daily-limit': 0.03},
+        aggressive: {'bt-position-size': 0.50, 'bt-stop-loss': 0.12, 'bt-take-profit': 0.20, 'bt-loss-mult': 1.5, 'bt-tp-levels': '', 'bt-daily-limit': 0.05},
+        deeptrade: {'bt-position-size': 0.25, 'bt-stop-loss': 0.08, 'bt-take-profit': '', 'bt-loss-mult': 1.0, 'bt-tp-levels': '0.05:0.33,0.10:0.33,0.15:0.34', 'bt-daily-limit': 0.03},
+    };
+    if (presets[name]) setBacktestValues(presets[name]);
+    if (name === 'deeptrade') document.getElementById('deeptrade-content').classList.remove('hidden');
+}
+
+function applyStrategyPreset(name) {
+    const presets = {
+        'trend-responsive': {mode: 'trend', prd: 30, minBars: 3, extBreak: 0.03, extLimit: 0.01, threshold: 0.005},
+        'trend-stable': {mode: 'trend', prd: 90, minBars: 10, extBreak: 0.05, extLimit: 0.02, threshold: 0.005},
+        kronos: {mode: 'kronos', prd: 60, minBars: 5, extBreak: 0.03, extLimit: 0.01, threshold: 0.005},
+        combined: {mode: 'combined', prd: 60, minBars: 5, extBreak: 0.03, extLimit: 0.01, threshold: 0.005},
+        multi_tf: {mode: 'multi_tf', prd: 60, minBars: 5, extBreak: 0.03, extLimit: 0.01, threshold: 0.005},
+    };
+    const preset = presets[name];
+    if (!preset) return;
+    setBacktestValues({
+        'bt-signal-mode': preset.mode,
+        'bt-trend-prd': preset.prd,
+        'bt-trend-min-bars': preset.minBars,
+        'bt-trend-ext-break': preset.extBreak,
+        'bt-trend-ext-limit': preset.extLimit,
+        'bt-threshold': preset.threshold,
+    });
+    onBtSignalModeChange();
+}
+
+function bindPresetTracking() {
+    const groups = {
+        'bt-scope-preset': ['bt-max-data-rows', 'bt-sample-count', 'bt-lookback', 'bt-pred-len'],
+        'bt-risk-preset': ['bt-position-size', 'bt-stop-loss', 'bt-take-profit', 'bt-loss-mult', 'bt-tp-levels', 'bt-daily-limit'],
+        'bt-strategy-preset': ['bt-trend-prd', 'bt-trend-min-bars', 'bt-trend-ext-break', 'bt-trend-ext-limit', 'bt-threshold'],
+    };
+    Object.entries(groups).forEach(([presetId, inputIds]) => {
+        inputIds.forEach(id => document.getElementById(id).addEventListener('input', () => markPresetCustom(presetId)));
+    });
+}
+
 // Backtest signal mode change
 function onBtSignalModeChange() {
     const mode = document.getElementById('bt-signal-mode').value;
@@ -612,9 +806,11 @@ async function runBacktest() {
     
     const mode = document.getElementById('bt-signal-mode').value;
     const params = {
+        ui_version: '2.1',
         data_path: dataPath,
         signal_mode: mode,
-        device: 'cpu',
+        max_data_rows: parseInt(document.getElementById('bt-max-data-rows').value),
+        device: (mode === 'kronos' || mode === 'combined') ? document.getElementById('bt-device').value : 'cpu',
         initial_capital: parseFloat(document.getElementById('bt-capital').value),
         position_size: parseFloat(document.getElementById('bt-position-size').value),
         stop_loss: parseFloat(document.getElementById('bt-stop-loss').value) || null,
@@ -628,9 +824,34 @@ async function runBacktest() {
         tp_levels: document.getElementById('bt-tp-levels').value || null,
         daily_loss_limit: parseFloat(document.getElementById('bt-daily-limit').value) || null,
     };
+    if (params.max_data_rows < 100) {
+        showStatus('bt-status', 'error', 'Max Data Bars must be at least 100');
+        return;
+    }
     
+    let predictionWindows = 0;
     if (mode === 'kronos' || mode === 'combined') {
         params.model_key = document.getElementById('bt-model-select').value;
+        params.lookback = parseInt(document.getElementById('bt-lookback').value);
+        params.pred_len = parseInt(document.getElementById('bt-pred-len').value);
+        params.sample_count = parseInt(document.getElementById('bt-sample-count').value);
+        params.threshold = parseFloat(document.getElementById('bt-threshold').value);
+        const timeframeOf = value => value.toLowerCase().match(/_(15m|1h|1d)(?:_|\.|$)/)?.[1];
+        const modelTimeframe = timeframeOf(params.model_key);
+        const dataTimeframe = timeframeOf(dataPath);
+        if (modelTimeframe && dataTimeframe && modelTimeframe !== dataTimeframe) {
+            showStatus('bt-status', 'error', `Model timeframe ${modelTimeframe} does not match data timeframe ${dataTimeframe}`);
+            return;
+        }
+        if (!Number.isFinite(params.threshold) || params.threshold <= 0 || params.threshold > 1) {
+            showStatus('bt-status', 'error', 'Signal Threshold must be between 0 and 1');
+            return;
+        }
+        if (params.max_data_rows < params.lookback + params.pred_len) {
+            showStatus('bt-status', 'error', `Max Data Bars must be at least ${params.lookback + params.pred_len}`);
+            return;
+        }
+        predictionWindows = Math.floor((params.max_data_rows - params.lookback - params.pred_len) / params.pred_len) + 1;
     }
     if (mode === 'multi_tf') {
         params.macro_data_path = document.getElementById('bt-macro-select').value;
@@ -638,9 +859,21 @@ async function runBacktest() {
     }
     
     const btn = document.getElementById('bt-run-btn');
+    const loadingMessage = document.getElementById('bt-loading-message');
+    const startedAt = Date.now();
+    const workload = predictionWindows > 0
+        ? ` · ${params.max_data_rows} bars · ${predictionWindows} prediction windows on ${params.device.toUpperCase()}`
+        : ` · up to ${params.max_data_rows} bars`;
+    const updateElapsed = () => {
+        const elapsed = Math.floor((Date.now() - startedAt) / 1000);
+        loadingMessage.textContent = `Running backtest${workload} · ${elapsed}s elapsed`;
+    };
     btn.disabled = true;
+    document.getElementById('bt-results').style.display = 'none';
     showLoading('bt-loading', true);
-    showStatus('bt-status', 'info', 'Running backtest...');
+    showStatus('bt-status', 'info', `Running backtest${workload}...`);
+    updateElapsed();
+    const elapsedTimer = setInterval(updateElapsed, 1000);
     
     try {
         const resp = await axios.post('/api/backtest', params);
@@ -650,16 +883,26 @@ async function runBacktest() {
             const m = resp.data.metrics;
             showStatus('bt-status', 'success', `✓ ${resp.data.message}`);
             document.getElementById('bt-results').style.display = 'block';
+            const diagnostics = document.getElementById('bt-diagnostics');
+            if (m.total_trades === 0) {
+                diagnostics.style.display = 'block';
+                diagnostics.textContent = predictionWindows === 1
+                    ? 'Smoke test completed, but one forecast window generated no trades. This is not a strategy performance result. Use Standard scope, matching model/data timeframes, or a lower Signal Threshold.'
+                    : 'No trades were generated. This is not a strategy performance result. Verify the model/data timeframe, increase Run Scope, or lower Signal Threshold.';
+            } else {
+                diagnostics.style.display = 'none';
+                diagnostics.textContent = '';
+            }
             
-            const fmtPct = v => (v * 100).toFixed(2) + '%';
-            const fmtNum = v => v.toFixed(2);
-            const cls = v => v >= 0 ? 'positive' : 'negative';
+            const fmtPct = v => Number.isFinite(v) ? (v * 100).toFixed(2) + '%' : 'N/A';
+            const fmtNum = v => Number.isFinite(v) ? v.toFixed(2) : 'N/A';
+            const cls = v => !Number.isFinite(v) ? '' : v > 0 ? 'positive' : v < 0 ? 'negative' : '';
             
             document.getElementById('bt-metrics').innerHTML = `
                 <div class="metric-card"><div class="label">Total Return</div><div class="value ${cls(m.total_return)}">${fmtPct(m.total_return)}</div></div>
                 <div class="metric-card"><div class="label">Annual Return</div><div class="value ${cls(m.annual_return)}">${fmtPct(m.annual_return)}</div></div>
                 <div class="metric-card"><div class="label">Sharpe Ratio</div><div class="value">${fmtNum(m.sharpe_ratio)}</div></div>
-                <div class="metric-card"><div class="label">Max Drawdown</div><div class="value negative">${fmtPct(m.max_drawdown)}</div></div>
+                <div class="metric-card"><div class="label">Max Drawdown</div><div class="value ${cls(m.max_drawdown)}">${fmtPct(m.max_drawdown)}</div></div>
                 <div class="metric-card"><div class="label">Win Rate</div><div class="value">${fmtPct(m.win_rate)}</div></div>
                 <div class="metric-card"><div class="label">Profit Factor</div><div class="value">${fmtNum(m.profit_factor)}</div></div>
                 <div class="metric-card"><div class="label">Total Trades</div><div class="value">${m.total_trades}</div></div>
@@ -677,6 +920,7 @@ async function runBacktest() {
         showStatus('bt-status', 'error', errMsg);
         if (tb) console.error('Backtest traceback:', tb);
     } finally {
+        clearInterval(elapsedTimer);
         btn.disabled = false;
     }
 }

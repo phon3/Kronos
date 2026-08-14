@@ -43,6 +43,7 @@ def load_model(
 
     print(f"Loading model from {model_path}...")
     model = Kronos.from_pretrained(model_path)
+    model.eval()
 
     device_obj = torch.device(device)
     predictor = KronosPredictor(model, tokenizer, device=device_obj, max_context=max_context)
@@ -164,6 +165,7 @@ def run_backtest(
     macro_min_bars: int = 3,
     take_profit_levels: Optional[list] = None,
     daily_loss_limit_pct: Optional[float] = None,
+    max_data_rows: Optional[int] = None,
 ) -> dict:
     """
     Full backtest pipeline: load model, generate predictions, run backtest, generate report.
@@ -198,6 +200,15 @@ def run_backtest(
     print(f"Loading data from {data_path}...")
     data = pd.read_csv(data_path)
     data["timestamps"] = pd.to_datetime(data["timestamps"])
+    data = data.sort_values("timestamps").reset_index(drop=True)
+    if max_data_rows is not None:
+        if signal_mode in ("kronos", "combined") and max_data_rows < lookback + pred_len:
+            raise ValueError(
+                f"max_data_rows must be at least lookback + pred_len ({lookback + pred_len})"
+            )
+        if len(data) > max_data_rows:
+            data = data.tail(max_data_rows).reset_index(drop=True)
+            print(f"  Limited backtest to the most recent {len(data)} rows")
     print(f"  {len(data)} rows, range: {data['timestamps'].min()} to {data['timestamps'].max()}")
 
     predictions = None
@@ -264,6 +275,9 @@ def run_backtest(
     if signal_mode == "multi_tf":
         macro_data = pd.read_csv(macro_data_path)
         macro_data["timestamps"] = pd.to_datetime(macro_data["timestamps"])
+        macro_data = macro_data.sort_values("timestamps").reset_index(drop=True)
+        if max_data_rows is not None and len(macro_data) > max_data_rows:
+            macro_data = macro_data.tail(max_data_rows).reset_index(drop=True)
         print(f"  Macro data: {len(macro_data)} rows, range: {macro_data['timestamps'].min()} to {macro_data['timestamps'].max()}")
 
         signals = backtester.generate_multi_tf_signals(
@@ -472,6 +486,7 @@ def main():
     parser.add_argument("--tp-levels", default=None, help="Multi-target take-profit levels as 'pct:frac,pct:frac,...' e.g. '0.05:0.33,0.10:0.33,0.15:0.34' closes 33%% at +5%%, 33%% at +10%%, 34%% at +15%%")
     # Daily loss limit (DeepTrade risk management)
     parser.add_argument("--daily-loss-limit", type=float, default=None, help="Stop entering new trades after this daily loss %% (e.g. 0.03 = 3%%). Resets each day.")
+    parser.add_argument("--max-data-rows", type=int, default=None, help="Use only the most recent N data rows")
 
     args = parser.parse_args()
 
@@ -482,13 +497,32 @@ def main():
         parser.error("--macro-data is required when --signal-mode is multi_tf")
 
     # Parse multi-target TP levels
+    # Format: "pct:frac,pct:frac,..." e.g. "0.05:0.33,0.10:0.33,0.15:0.34"
     tp_levels = None
     if args.tp_levels:
-        parts = args.tp_levels.split(",")
         tp_levels = []
+        parts = [p.strip() for p in args.tp_levels.split(",") if p.strip()]
         for part in parts:
-            pct_str, frac_str = part.strip().split(":")
-            tp_levels.append((float(pct_str), float(frac_str)))
+            if ":" not in part:
+                parser.error(
+                    f"Invalid multi-target TP level '{part}'. "
+                    "Each level must be in the format 'pct:frac' (e.g. '0.05:0.33')."
+                )
+            pct_str, frac_str = part.split(":", 1)
+            try:
+                pct_val = float(pct_str.strip())
+                frac_val = float(frac_str.strip())
+            except ValueError:
+                parser.error(
+                    f"Invalid multi-target TP level '{part}': values must be numbers."
+                )
+            if pct_val <= 0:
+                parser.error(f"TP level percentage must be positive, got {pct_val}.")
+            if frac_val <= 0 or frac_val > 1:
+                parser.error(f"TP level fraction must be between 0 and 1, got {frac_val}.")
+            tp_levels.append((pct_val, frac_val))
+        if not tp_levels:
+            parser.error("No valid multi-target TP levels provided.")
 
     metrics = run_backtest(
         model_path=args.model or "",
@@ -524,6 +558,7 @@ def main():
         macro_min_bars=args.macro_min_bars,
         take_profit_levels=tp_levels,
         daily_loss_limit_pct=args.daily_loss_limit,
+        max_data_rows=args.max_data_rows,
     )
 
     if metrics:

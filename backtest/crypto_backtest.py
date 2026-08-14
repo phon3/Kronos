@@ -179,7 +179,7 @@ class CryptoBacktester:
             combined.loc[kronos_short & trend_short, "signal"] = -1
 
         # Position: hold until either signal reverses
-        combined["position"] = combined["signal"].replace(0, np.nan).ffill().fillna(0)
+        combined["position"] = combined["signal"].astype(int)
 
         return combined
 

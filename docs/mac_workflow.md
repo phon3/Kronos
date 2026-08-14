@@ -281,32 +281,50 @@ backtest_results/btc_trend/
 └── trade_log.csv             # Individual trade entries/exits with PnL
 ```
 
-### 3.6 Parameter sweep (find best trend params)
+### 3.6 Backtest optimizer (select live-test candidates)
 
-Grid-search trend detection parameters with out-of-sample evaluation:
+The optimizer sweeps signal and risk settings, evaluates each configuration on separate in-sample and out-of-sample periods, filters configurations with too few out-of-sample trades, and exports the top candidates. Start with `--dry-run` to inspect the combination count before running work.
 
 ```bash
-# 1h sweep
+# Fast trend optimizer; export the top 3 behaviorally distinct candidates
 python -m backtest.param_sweep \
   --data ./data/BTC_USD_1h.csv \
-  --output ./backtest_results/param_sweep_1h/ \
-  --prd 30,60,90,120 --ext-break 0.03,0.05,0.08 --ext-limit 0.01,0.02,0.03 --min-bars 3,5,10 \
-  --position-size 0.25 --stop-loss 0.08
+  --output ./backtest_results/optimizer_1h_trend/ \
+  --signal-mode trend --grid-profile quick --top-n 3 \
+  --max-data-rows 5000 --dry-run
 
-# 15m sweep (wider prd range for higher granularity)
+python -m backtest.param_sweep \
+  --data ./data/BTC_USD_1h.csv \
+  --output ./backtest_results/optimizer_1h_trend/ \
+  --signal-mode trend --grid-profile quick --top-n 3 \
+  --max-data-rows 5000
+
+# Combined Kronos + trend optimizer; model predictions are generated once and reused
+python -m backtest.param_sweep \
+  --data ./data/BTC_USD_1h.csv \
+  --model ./finetune_csv/finetuned/btc_usd_1h_gpu/basemodel/best_model \
+  --tokenizer ./finetune_csv/finetuned/btc_usd_1h_gpu/tokenizer/best_model \
+  --device mps --signal-mode combined --grid-profile quick \
+  --top-n 5 --max-data-rows 1024 \
+  --output ./backtest_results/optimizer_1h_combined/
+
+# Custom trend grid remains supported
 python -m backtest.param_sweep \
   --data ./data/BTC_USD_15m.csv \
-  --output ./backtest_results/param_sweep_15m/ \
-  --prd 60,120,240,480 --ext-break 0.03,0.05,0.08 --ext-limit 0.01,0.02,0.03 --min-bars 3,5,10 \
-  --position-size 0.25 --stop-loss 0.08
-
-# 1d sweep (shorter prd for daily bars)
-python -m backtest.param_sweep \
-  --data ./data/BTC_USD_1d.csv \
-  --output ./backtest_results/param_sweep_1d/ \
-  --prd 10,20,30,60 --ext-break 0.03,0.05,0.08,0.10 --ext-limit 0.01,0.02,0.03 --min-bars 3,5,10 \
-  --position-size 0.25 --stop-loss 0.08
+  --signal-mode trend --grid-profile quick --top-n 5 \
+  --prd 60,120,240,480 --ext-break 0.03,0.05,0.08 \
+  --ext-limit 0.01,0.02,0.03 --min-bars 3,5,10 \
+  --position-size 0.25 --stop-loss 0.08 \
+  --output ./backtest_results/optimizer_15m/
 ```
+
+Each run writes:
+
+- `all_results.csv`: every tested configuration with in-sample and out-of-sample metrics
+- `top_candidates.csv`: ranked top 3/5 configurations
+- `live_test_candidates.json`: machine-readable settings and metrics for the live-testing process
+
+Use `--rank-by composite` (default) for risk-adjusted, stability-penalized ranking. Alternatives are `sharpe`, `return`, and `calmar`. Standard and exhaustive grids are protected by `--max-combinations`; raise that limit explicitly only after reviewing `--dry-run` output.
 
 ### 3.7 Best params found (from sweep results)
 

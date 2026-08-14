@@ -21,8 +21,18 @@ except ImportError:
     MODEL_AVAILABLE = False
     print("Warning: Kronos model cannot be imported, will use simulated data for demonstration")
 
+UI_VERSION = '2.1'
+
 app = Flask(__name__)
 CORS(app)
+
+@app.after_request
+def disable_page_cache(response):
+    if request.path == '/':
+        response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
+        response.headers['Pragma'] = 'no-cache'
+        response.headers['Expires'] = '0'
+    return response
 
 # Global variables to store models
 tokenizer = None
@@ -686,6 +696,8 @@ def load_model():
             tokenizer = KronosTokenizer.from_pretrained(model_config['tokenizer_id'])
             model = Kronos.from_pretrained(model_config['model_id'])
         
+        model.eval()
+
         # Create predictor
         predictor = KronosPredictor(model, tokenizer, device=device, max_context=model_config['context_length'])
         
@@ -746,6 +758,12 @@ def run_backtest():
     """Run backtest with given parameters"""
     try:
         data = request.get_json()
+        if data.get('ui_version') != UI_VERSION:
+            return jsonify({
+                'error': f'This browser page is outdated. Reload Kronos UI v{UI_VERSION} before running another backtest.',
+                'code': 'STALE_UI',
+                'ui_version': UI_VERSION,
+            }), 409
         
         # Required params
         data_path = data.get('data_path')
@@ -754,6 +772,13 @@ def run_backtest():
         if not data_path:
             return jsonify({'error': 'data_path is required'}), 400
         
+        device = data.get('device', 'cpu')
+        if device not in ('cpu', 'cuda', 'mps'):
+            return jsonify({'error': f'Unsupported device: {device}'}), 400
+        max_data_rows = int(data.get('max_data_rows', 1024))
+        if max_data_rows < 100:
+            return jsonify({'error': 'Max data bars must be at least 100'}), 400
+
         # Build kwargs for run_backtest
         bt_kwargs = {
             'model_path': '',
@@ -761,7 +786,7 @@ def run_backtest():
             'data_path': data_path,
             'signal_mode': signal_mode,
             'output_dir': data.get('output_dir', './backtest_results/webui/'),
-            'device': data.get('device', 'cpu'),
+            'device': device,
             'initial_capital': float(data.get('initial_capital', 100000)),
             'position_size_pct': float(data.get('position_size', 0.25)),
             'stop_loss_pct': float(data.get('stop_loss')) if data.get('stop_loss') else None,
@@ -771,6 +796,7 @@ def run_backtest():
             'reset_on_win': data.get('reset_on_win', True),
             'walk_forward': data.get('walk_forward', False),
             'train_ratio': float(data.get('train_ratio', 0.7)),
+            'max_data_rows': max_data_rows,
         }
         
         # Trend params
@@ -796,11 +822,33 @@ def run_backtest():
             model_key = data.get('model_key')
             if not model_key:
                 return jsonify({'error': 'model_key required for kronos/combined mode'}), 400
+            lookback = int(data.get('lookback', 512))
+            pred_len = int(data.get('pred_len', 48))
+            sample_count = int(data.get('sample_count', 1))
+            threshold = float(data.get('threshold', 0.005))
+            if lookback < 10 or pred_len < 1 or sample_count < 1 or threshold <= 0 or threshold > 1:
+                return jsonify({'error': 'Invalid model backtest parameters'}), 400
+            if max_data_rows < lookback + pred_len:
+                return jsonify({
+                    'error': f'Max data bars must be at least {lookback + pred_len} for the selected lookback and prediction length'
+                }), 400
+            bt_kwargs['lookback'] = lookback
+            bt_kwargs['pred_len'] = pred_len
+            bt_kwargs['sample_count'] = sample_count
+            bt_kwargs['threshold'] = threshold
             all_models = {**AVAILABLE_MODELS, **scan_finetuned_models()}
             if model_key not in all_models:
                 return jsonify({'error': f'Unknown model: {model_key}'}), 400
             mc = all_models[model_key]
             if mc.get('type') == 'finetuned':
+                model_timeframe = next((tf for tf in ('15m', '1h', '1d') if f'_{tf}' in model_key.lower()), None)
+                data_name = os.path.basename(data_path).lower()
+                data_timeframe = next((tf for tf in ('15m', '1h', '1d') if f'_{tf}' in data_name), None)
+                if model_timeframe and data_timeframe and model_timeframe != data_timeframe:
+                    return jsonify({
+                        'error': f'Model timeframe {model_timeframe} does not match data timeframe {data_timeframe}. Select matching model and data files.',
+                        'code': 'TIMEFRAME_MISMATCH',
+                    }), 400
                 bt_kwargs['model_path'] = mc['model_path']
                 bt_kwargs['tokenizer_path'] = mc['tokenizer_path']
             else:
@@ -808,13 +856,32 @@ def run_backtest():
                 bt_kwargs['tokenizer_path'] = mc['tokenizer_id']
         
         # DeepTrade: multi-target TP levels
+        # Format: "pct:frac,pct:frac,..." e.g. "0.05:0.33,0.10:0.33,0.15:0.34"
         tp_levels_str = data.get('tp_levels')
         if tp_levels_str:
-            parts = tp_levels_str.split(',')
             tp_levels = []
+            parts = [p.strip() for p in tp_levels_str.split(',') if p.strip()]
             for part in parts:
-                pct_str, frac_str = part.strip().split(':')
-                tp_levels.append((float(pct_str), float(frac_str)))
+                if ':' not in part:
+                    raise ValueError(
+                        f"Invalid multi-target TP level '{part}'. "
+                        "Each level must be in the format 'pct:frac' (e.g. '0.05:0.33')."
+                    )
+                pct_str, frac_str = part.split(':', 1)
+                try:
+                    pct_val = float(pct_str.strip())
+                    frac_val = float(frac_str.strip())
+                except ValueError as e:
+                    raise ValueError(
+                        f"Invalid multi-target TP level '{part}': values must be numbers."
+                    ) from e
+                if pct_val <= 0:
+                    raise ValueError(f"TP level percentage must be positive, got {pct_val}.")
+                if frac_val <= 0 or frac_val > 1:
+                    raise ValueError(f"TP level fraction must be between 0 and 1, got {frac_val}.")
+                tp_levels.append((pct_val, frac_val))
+            if not tp_levels:
+                raise ValueError("No valid multi-target TP levels provided.")
             bt_kwargs['take_profit_levels'] = tp_levels
         
         # DeepTrade: daily loss limit
@@ -843,7 +910,9 @@ def run_backtest():
                 elif isinstance(obj, (list, tuple)):
                     return [serialize(v) for v in obj]
                 elif hasattr(obj, 'item'):
-                    return obj.item()
+                    return serialize(obj.item())
+                elif isinstance(obj, float) and not np.isfinite(obj):
+                    return None
                 else:
                     return obj
             
