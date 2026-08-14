@@ -506,6 +506,14 @@ class Trends:
             )
         return pd.DataFrame(records)
 
+    def get_confirmed_trend_signals(self) -> pd.Series:
+        """Return causal trend signals beginning only when movements are confirmed."""
+        signals = pd.Series(0, index=self.data.index, dtype=int)
+        for movement in self.get_movements():
+            end = movement.end_conf if movement.end_conf is not None else self.data.index[-1]
+            signals.loc[movement.start_conf:end] = 1 if movement.is_adv else -1
+        return signals
+
     def get_trend_signals(self) -> pd.Series:
         """Return a trend signal series aligned to self.data.index.
 

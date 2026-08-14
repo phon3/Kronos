@@ -117,7 +117,7 @@ class CryptoBacktester:
             ext_limit=ext_limit,
             min_bars=min_bars,
         )
-        trend_signals = trends.get_trend_signals()
+        trend_signals = trends.get_confirmed_trend_signals()
 
         signals = pd.DataFrame(index=df.index)
         signals["actual_close"] = df["close"].astype(float)

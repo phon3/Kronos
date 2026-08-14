@@ -221,6 +221,15 @@ class TestTrendSignals:
         assert len(signals) == len(trending_up_data)
         assert signals.index.equals(trending_up_data.index)
 
+    def test_confirmed_signals_do_not_start_before_first_confirmation(self, trending_up_data):
+        trends = Trends(trending_up_data, prd=5, ext_break=0.05, ext_limit=0.02, min_bars=2)
+        movements = trends.get_movements()
+        confirmed = trends.get_confirmed_trend_signals()
+
+        assert movements
+        first_confirmation = min(movement.start_conf for movement in movements)
+        assert confirmed.loc[:first_confirmation].iloc[:-1].eq(0).all()
+
     def test_signal_values(self, trending_up_data):
         t = Trends(trending_up_data, prd=5, ext_break=0.05, ext_limit=0.02, min_bars=2)
         signals = t.get_trend_signals()
