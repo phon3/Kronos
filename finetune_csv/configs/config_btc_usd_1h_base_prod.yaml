@@ -1,0 +1,61 @@
+# Kronos-base production config: Fine-tune Kronos-base on BTC/USD 1h candles from Coinbase
+#
+# Data: python -m data_ingestion.fetch_data --source coinbase --symbol BTC/USD --timeframe 1h --start 2023-01-01 --end 2025-08-01 --out ./data/BTC_USD_1h.csv
+#
+# Differences from the small production config:
+# - Kronos-base (102.3M params) instead of Kronos-small (24.7M)
+# - Smaller batch size + higher gradient accumulation to fit on a 24GB GPU
+# - Same 512 context window and 48-step prediction horizon
+
+data:
+  data_path: "./data/BTC_USD_1h.csv"
+  lookback_window: 512
+  predict_window: 48
+  max_context: 512
+  clip: 5.0
+  train_ratio: 0.85
+  val_ratio: 0.10
+  test_ratio: 0.05
+
+training:
+  tokenizer_epochs: 30
+  basemodel_epochs: 25
+  batch_size: 16
+  log_interval: 50
+  num_workers: 4
+  seed: 42
+
+  tokenizer_learning_rate: 0.0001
+  predictor_learning_rate: 0.000002
+
+  adam_beta1: 0.9
+  adam_beta2: 0.95
+  adam_weight_decay: 0.1
+
+  accumulation_steps: 4
+
+model_paths:
+  pretrained_tokenizer: "NeoQuasar/Kronos-Tokenizer-base"
+  pretrained_predictor: "NeoQuasar/Kronos-base"
+
+  exp_name: "btc_usd_1h_base_prod"
+  base_path: "./finetune_csv/finetuned/"
+
+  base_save_path: ""
+  finetuned_tokenizer: ""
+
+  tokenizer_save_name: "tokenizer"
+  basemodel_save_name: "basemodel"
+
+experiment:
+  name: "btc_usd_1h_base_finetune_prod"
+  description: "BTC/USD 1h production fine-tuning — Kronos-base"
+  use_comet: false
+
+  train_tokenizer: true
+  train_basemodel: true
+  skip_existing: false
+
+device:
+  use_cuda: true
+  device_id: 0
