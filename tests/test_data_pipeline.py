@@ -333,6 +333,42 @@ class TestCryptoBacktester:
         assert signals["trend_signal"].isin([0, 1, -1]).all()
 
 
+def test_generate_predictions_preserves_disabled_top_k():
+    rows = 20
+    data = pd.DataFrame({
+        "timestamps": pd.date_range("2024-01-01", periods=rows, freq="1h"),
+        "open": np.arange(rows),
+        "high": np.arange(rows) + 1,
+        "low": np.arange(rows) - 1,
+        "close": np.arange(rows),
+        "volume": np.ones(rows),
+        "amount": np.ones(rows),
+    })
+
+    class Predictor:
+        def __init__(self):
+            self.top_k_values = []
+
+        def predict(self, **kwargs):
+            self.top_k_values.append(kwargs["top_k"])
+            return pd.DataFrame({column: np.ones(kwargs["pred_len"]) for column in [
+                "open", "high", "low", "close", "volume", "amount"
+            ]})
+
+    predictor = Predictor()
+    predictions = backtest_runner.generate_predictions(
+        predictor,
+        data,
+        lookback=10,
+        pred_len=5,
+        top_k=0,
+        sample_count=3,
+    )
+
+    assert predictor.top_k_values == [0, 0]
+    assert predictions["prediction_window"].tolist() == [0] * 5 + [1] * 5
+
+
 def test_webui_rejects_stale_backtest_client():
     response = app.test_client().post("/api/backtest", json={"data_path": "unused.csv"})
 

@@ -112,7 +112,7 @@ def generate_predictions(
                 pred_len=pred_len,
                 T=T,
                 top_p=top_p,
-                top_k=top_k if top_k > 0 else 1,
+                top_k=top_k,
                 sample_count=sample_count,
                 verbose=False,
             )
