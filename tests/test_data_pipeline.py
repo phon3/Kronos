@@ -24,6 +24,7 @@ from backtest.param_sweep import (
     _parse_tp_level_sets,
     _risk_grid,
     _score_row,
+    _trade_diagnostics,
     run_optimizer,
     run_optimizer_matrix,
 )
@@ -445,6 +446,21 @@ def test_combined_optimizer_holds_through_neutral_trend_until_reversal():
     combined = _combine_signals(kronos, trend, allow_short=True)
 
     assert combined["position"].tolist() == [1, 1, 0]
+
+
+def test_optimizer_trade_diagnostics_separate_partial_and_completed_exits():
+    trades = [
+        {"timestamp": "2024-01-01 00:00", "action": "OPEN", "reason": "SIGNAL"},
+        {"timestamp": "2024-01-01 01:00", "action": "PARTIAL_CLOSE", "reason": "TP1"},
+        {"timestamp": "2024-01-01 03:00", "action": "CLOSE", "reason": "SIGNAL"},
+    ]
+
+    diagnostics = _trade_diagnostics(trades)
+
+    assert diagnostics["completed_trades"] == 1
+    assert diagnostics["partial_exits"] == 1
+    assert diagnostics["signal_exits"] == 1
+    assert diagnostics["average_holding_hours"] == 3
 
 
 def test_optimizer_uses_common_timestamp_split():

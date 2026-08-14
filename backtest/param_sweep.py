@@ -323,9 +323,38 @@ def _combine_signals(kronos: pd.DataFrame, trend: pd.DataFrame, allow_short: boo
 
 
 def _metric_columns(prefix: str, metrics: dict) -> dict:
-    keys = ["total_return", "annual_return", "sharpe_ratio", "max_drawdown", "win_rate",
-            "profit_factor", "total_trades", "total_pnl", "final_capital", "buy_hold_return"]
+    keys = [
+        "total_return", "annual_return", "sharpe_ratio", "max_drawdown", "win_rate",
+        "profit_factor", "total_trades", "total_pnl", "final_capital", "buy_hold_return",
+        "completed_trades", "partial_exits", "signal_exits", "stop_loss_exits",
+        "take_profit_exits", "end_exits", "average_holding_hours", "median_holding_hours",
+        "max_holding_hours",
+    ]
     return {f"{prefix}_{key}": metrics.get(key) for key in keys}
+
+
+def _trade_diagnostics(trades: list) -> dict:
+    closes = [trade for trade in trades if trade["action"] == "CLOSE"]
+    partials = [trade for trade in trades if trade["action"] == "PARTIAL_CLOSE"]
+    durations = []
+    opened_at = None
+    for trade in trades:
+        if trade["action"] == "OPEN":
+            opened_at = pd.Timestamp(trade["timestamp"])
+        elif trade["action"] == "CLOSE" and opened_at is not None:
+            durations.append((pd.Timestamp(trade["timestamp"]) - opened_at).total_seconds() / 3600)
+            opened_at = None
+    return {
+        "completed_trades": len(closes),
+        "partial_exits": len(partials),
+        "signal_exits": sum(trade.get("reason") == "SIGNAL" for trade in closes),
+        "stop_loss_exits": sum(trade.get("reason") == "STOP_LOSS" for trade in closes),
+        "take_profit_exits": sum(trade.get("reason") == "TAKE_PROFIT" for trade in closes),
+        "end_exits": sum(trade.get("reason") == "END" for trade in closes),
+        "average_holding_hours": float(np.mean(durations)) if durations else 0,
+        "median_holding_hours": float(np.median(durations)) if durations else 0,
+        "max_holding_hours": max(durations, default=0),
+    }
 
 
 def _signal_diagnostics(signals: pd.DataFrame) -> dict:
@@ -358,7 +387,7 @@ def _score_row(
     target_trades: int = 30,
     min_excess_return: float = 0,
 ) -> float:
-    trades = row.get("oos_total_trades", 0) or 0
+    trades = row.get("oos_completed_trades", row.get("oos_total_trades", 0)) or 0
     if trades < min_trades:
         return float("-inf")
     sharpe = row.get("oos_sharpe_ratio", 0) or 0
@@ -413,7 +442,9 @@ def _evaluate_signals(
             key: value for key, value in risk.items() if key != "risk_profile"
         })
         results, trades = backtester.run_backtest(segment)
-        return backtester.calculate_metrics(results, trades)
+        metrics = backtester.calculate_metrics(results, trades)
+        metrics.update(_trade_diagnostics(trades))
+        return metrics
 
     output = {}
     for prefix, segment in segments.items():
@@ -680,7 +711,9 @@ def run_optimizer(
                     split_timestamp=split_timestamp,
                 ))
                 row["oos_excess_return"] = row["oos_total_return"] - row["oos_buy_hold_return"]
-                row["trade_confidence"] = min(1.0, np.sqrt(row["oos_total_trades"] / max(target_trades, 1)))
+                row["trade_confidence"] = min(
+                    1.0, np.sqrt(row["oos_completed_trades"] / max(target_trades, 1))
+                )
                 row["sharpe_stability_gap"] = abs(row["oos_sharpe_ratio"] - row["is_sharpe_ratio"])
                 row["score"] = _score_row(
                     row,
