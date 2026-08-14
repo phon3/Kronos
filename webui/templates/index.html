@@ -646,7 +646,9 @@ function applyPredictionPreset(name) {
     modelSelect.value = modelKey;
     document.getElementById('device-select').value = 'mps';
     const dataSelect = document.getElementById('data-select');
-    const dataOption = [...dataSelect.options].find(option => option.text.includes('BTC_USD_1h.csv'));
+    const dataOptions = [...dataSelect.options];
+    const dataOption = dataOptions.find(option => option.text.includes('BTC_USD_1h_live.csv'))
+        || dataOptions.find(option => option.text.includes('BTC_USD_1h.csv'));
     if (dataOption) dataSelect.value = dataOption.value;
     document.getElementById('lookback').value = 256;
     document.getElementById('pred-len').value = 48;
