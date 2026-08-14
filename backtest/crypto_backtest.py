@@ -573,6 +573,13 @@ class CryptoBacktester:
             bh_return = (prices.iloc[-1] - prices.iloc[0]) / prices.iloc[0]
         else:
             bh_return = 0
+        portfolio_values = results["capital"].replace(0, np.nan)
+        exposure_notional = results["position"] * results["price"]
+        gross_exposure = (exposure_notional.abs() / portfolio_values).replace([np.inf, -np.inf], np.nan).fillna(0)
+        net_exposure = (exposure_notional / portfolio_values).replace([np.inf, -np.inf], np.nan).fillna(0)
+        average_gross_exposure = gross_exposure.mean()
+        average_net_exposure = net_exposure.mean()
+        exposure_matched_buy_hold_return = bh_return * average_gross_exposure
 
         return {
             "total_return": total_return,
@@ -586,6 +593,10 @@ class CryptoBacktester:
             "total_pnl": total_pnl,
             "final_capital": final_capital,
             "buy_hold_return": bh_return,
+            "average_gross_exposure": average_gross_exposure,
+            "average_net_exposure": average_net_exposure,
+            "exposure_matched_buy_hold_return": exposure_matched_buy_hold_return,
+            "excess_vs_matched_exposure": total_return - exposure_matched_buy_hold_return,
             "periods_per_year": periods_per_year,
         }
 
@@ -603,6 +614,8 @@ class CryptoBacktester:
             "sharpe_ratio": 0, "max_drawdown": 0, "win_rate": 0,
             "profit_factor": 0, "total_trades": 0, "total_pnl": 0,
             "final_capital": self.initial_capital, "buy_hold_return": 0,
+            "average_gross_exposure": 0, "average_net_exposure": 0,
+            "exposure_matched_buy_hold_return": 0, "excess_vs_matched_exposure": 0,
             "periods_per_year": 365,
         }
 

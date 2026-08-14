@@ -203,6 +203,10 @@ class TestCryptoBacktester:
         assert "sharpe_ratio" in metrics
         assert "max_drawdown" in metrics
         assert isinstance(metrics["total_trades"], int)
+        assert metrics["average_gross_exposure"] >= 0
+        assert metrics["excess_vs_matched_exposure"] == pytest.approx(
+            metrics["total_return"] - metrics["exposure_matched_buy_hold_return"]
+        )
 
     @pytest.mark.parametrize("side, expected_entry, expected_exit", [
         (1, 101.0, 99.0),
@@ -446,6 +450,21 @@ def test_combined_optimizer_holds_through_neutral_trend_until_reversal():
     combined = _combine_signals(kronos, trend, allow_short=True)
 
     assert combined["position"].tolist() == [1, 1, 0]
+
+
+def test_combined_entry_only_ignores_kronos_flips_until_trend_reversal():
+    index = pd.date_range("2024-01-01", periods=4, freq="1h")
+    kronos = pd.DataFrame({"actual_close": [100, 101, 102, 103], "position": [1, -1, -1, 1]}, index=index)
+    trend = pd.DataFrame({
+        "trend_signal": [1, 0, 0, -1],
+        "position": [1, 1, 1, -1],
+    }, index=index)
+
+    continuous = _combine_signals(kronos, trend, allow_short=True, confirmation_policy="continuous")
+    entry_only = _combine_signals(kronos, trend, allow_short=True, confirmation_policy="entry_only")
+
+    assert continuous["position"].tolist() == [1, 0, 0, 0]
+    assert entry_only["position"].tolist() == [1, 1, 1, 0]
 
 
 def test_optimizer_trade_diagnostics_separate_partial_and_completed_exits():

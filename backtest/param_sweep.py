@@ -176,20 +176,20 @@ def _grid_profile(name: str) -> dict:
     profiles = {
         "quick": {
             "prd": [30, 60], "ext_break": [0.03, 0.05], "ext_limit": [0.01, 0.02],
-            "min_bars": [3, 5], "threshold": [0.003, 0.005],
+            "min_bars": [3, 5], "threshold": [0.003, 0.005], "combined_policy": ["continuous"],
             "macro_prd": [10], "macro_ext_break": [0.03], "macro_ext_limit": [0.03],
             "macro_min_bars": [3],
         },
         "standard": {
             "prd": [30, 60, 90], "ext_break": [0.02, 0.03, 0.05], "ext_limit": [0.01, 0.02],
-            "min_bars": [3, 5, 10], "threshold": [0.002, 0.005, 0.01],
+            "min_bars": [3, 5, 10], "threshold": [0.002, 0.005, 0.01], "combined_policy": ["continuous"],
             "macro_prd": [10, 20], "macro_ext_break": [0.03, 0.05], "macro_ext_limit": [0.02, 0.03],
             "macro_min_bars": [3, 5],
         },
         "exhaustive": {
             "prd": [15, 30, 60, 90, 120], "ext_break": [0.01, 0.02, 0.03, 0.05, 0.08],
             "ext_limit": [0.005, 0.01, 0.02, 0.03], "min_bars": [2, 3, 5, 10],
-            "threshold": [0.001, 0.002, 0.003, 0.005, 0.01, 0.02],
+            "threshold": [0.001, 0.002, 0.003, 0.005, 0.01, 0.02], "combined_policy": ["continuous", "entry_only"],
             "macro_prd": [5, 10, 20, 30], "macro_ext_break": [0.02, 0.03, 0.05],
             "macro_ext_limit": [0.01, 0.02, 0.03], "macro_min_bars": [2, 3, 5],
         },
@@ -297,7 +297,12 @@ def _signal_grid(mode: str, grid: dict) -> list[dict]:
     if mode == "kronos":
         return [dict(threshold=threshold) for threshold in grid["threshold"]]
     if mode == "combined":
-        return [{**params, "threshold": threshold} for params, threshold in itertools.product(trend, grid["threshold"])]
+        return [
+            {**params, "threshold": threshold, "combined_policy": policy}
+            for params, threshold, policy in itertools.product(
+                trend, grid["threshold"], grid.get("combined_policy", ["continuous"])
+            )
+        ]
     macro = [
         dict(macro_prd=prd, macro_ext_break=ext_break, macro_ext_limit=ext_limit, macro_min_bars=min_bars)
         for prd, ext_break, ext_limit, min_bars in itertools.product(
@@ -309,7 +314,12 @@ def _signal_grid(mode: str, grid: dict) -> list[dict]:
     raise ValueError(f"Unsupported signal mode: {mode}")
 
 
-def _combine_signals(kronos: pd.DataFrame, trend: pd.DataFrame, allow_short: bool) -> pd.DataFrame:
+def _combine_signals(
+    kronos: pd.DataFrame,
+    trend: pd.DataFrame,
+    allow_short: bool,
+    confirmation_policy: str = "continuous",
+) -> pd.DataFrame:
     combined = kronos.copy()
     combined["kronos_position"] = combined["position"].astype(int)
     combined["trend_signal"] = trend["trend_signal"].reindex(combined.index).fillna(0)
@@ -318,7 +328,28 @@ def _combine_signals(kronos: pd.DataFrame, trend: pd.DataFrame, allow_short: boo
     combined.loc[(combined["kronos_position"] > 0) & (combined["trend_position"] > 0), "signal"] = 1
     if allow_short:
         combined.loc[(combined["kronos_position"] < 0) & (combined["trend_position"] < 0), "signal"] = -1
-    combined["position"] = combined["signal"].astype(int)
+    if confirmation_policy == "continuous":
+        combined["position"] = combined["signal"].astype(int)
+    elif confirmation_policy == "entry_only":
+        state = 0
+        positions = []
+        for kronos_position, trend_position in zip(
+            combined["kronos_position"], combined["trend_position"], strict=True
+        ):
+            if state == 0:
+                if (
+                    kronos_position == trend_position
+                    and trend_position != 0
+                    and (trend_position > 0 or allow_short)
+                ):
+                    state = int(trend_position)
+            elif trend_position != state:
+                can_enter = kronos_position == trend_position and (trend_position > 0 or allow_short)
+                state = int(trend_position) if can_enter else 0
+            positions.append(state)
+        combined["position"] = positions
+    else:
+        raise ValueError(f"Unknown confirmation policy: {confirmation_policy}")
     return combined
 
 
@@ -328,7 +359,8 @@ def _metric_columns(prefix: str, metrics: dict) -> dict:
         "profit_factor", "total_trades", "total_pnl", "final_capital", "buy_hold_return",
         "completed_trades", "partial_exits", "signal_exits", "stop_loss_exits",
         "take_profit_exits", "end_exits", "average_holding_hours", "median_holding_hours",
-        "max_holding_hours",
+        "max_holding_hours", "average_gross_exposure", "average_net_exposure",
+        "exposure_matched_buy_hold_return", "excess_vs_matched_exposure",
     ]
     return {f"{prefix}_{key}": metrics.get(key) for key in keys}
 
@@ -427,6 +459,7 @@ def _evaluate_signals(
     train_ratio: float,
     validation_folds: int = 3,
     split_timestamp: Optional[pd.Timestamp] = None,
+    allow_short: bool = True,
 ) -> dict:
     if split_timestamp is not None and isinstance(signals.index, pd.DatetimeIndex):
         segments = {
@@ -438,7 +471,7 @@ def _evaluate_signals(
         segments = {"is": signals.iloc[:split_idx], "oos": signals.iloc[split_idx:]}
 
     def evaluate(segment: pd.DataFrame) -> dict:
-        backtester = CryptoBacktester(initial_capital=initial_capital, allow_short=True, **{
+        backtester = CryptoBacktester(initial_capital=initial_capital, allow_short=allow_short, **{
             key: value for key, value in risk.items() if key != "risk_profile"
         })
         results, trades = backtester.run_backtest(segment)
@@ -548,6 +581,7 @@ def run_optimizer(
     pred_len: int = 48,
     sample_count: int = 1,
     seed: int = 123,
+    allow_short: bool = True,
     max_combinations: int = 20_000,
     dry_run: bool = False,
     grid_overrides: Optional[dict] = None,
@@ -635,7 +669,7 @@ def run_optimizer(
     kronos_cache = {}
     results = []
     for signal_index, signal_config in enumerate(signal_configs, start=1):
-        signal_bt = CryptoBacktester(threshold=signal_config.get("threshold", 0.005), allow_short=True)
+        signal_bt = CryptoBacktester(threshold=signal_config.get("threshold", 0.005), allow_short=allow_short)
         trend_key = tuple(signal_config.get(key) for key in (
             "trend_prd", "trend_ext_break", "trend_ext_limit", "trend_min_bars"
         ))
@@ -655,7 +689,12 @@ def run_optimizer(
             threshold = signal_config["threshold"]
             if threshold not in kronos_cache:
                 kronos_cache[threshold] = signal_bt.generate_signals(predictions, actual)
-            signals = _combine_signals(kronos_cache[threshold], trend_cache[trend_key], True)
+            signals = _combine_signals(
+                kronos_cache[threshold],
+                trend_cache[trend_key],
+                allow_short,
+                confirmation_policy=signal_config.get("combined_policy", "continuous"),
+            )
         else:
             signals = signal_bt.generate_multi_tf_signals(
                 data, macro_data,
@@ -694,6 +733,7 @@ def run_optimizer(
                 "sample_count": sample_count,
                 "max_data_rows": len(data),
                 "seed": seed,
+                "allow_short": allow_short,
                 "split_timestamp": str(split_timestamp),
                 **signal_diagnostics,
                 **oos_signal_diagnostics,
@@ -709,6 +749,7 @@ def run_optimizer(
                     train_ratio,
                     validation_folds=validation_folds,
                     split_timestamp=split_timestamp,
+                    allow_short=allow_short,
                 ))
                 row["oos_excess_return"] = row["oos_total_return"] - row["oos_buy_hold_return"]
                 row["trade_confidence"] = min(
@@ -835,6 +876,8 @@ def main():
     parser.add_argument("--ext-limit", default=None)
     parser.add_argument("--min-bars", default=None)
     parser.add_argument("--threshold", default=None)
+    parser.add_argument("--combined-policies", default=None)
+    parser.add_argument("--long-only", action="store_true")
     parser.add_argument("--position-size", type=float, default=None)
     parser.add_argument("--stop-loss", type=float, default=None)
     parser.add_argument("--position-sizes", default=None)
@@ -860,7 +903,11 @@ def main():
         "ext_limit": _parse_list(args.ext_limit, float),
         "min_bars": _parse_list(args.min_bars, int),
         "threshold": _parse_list(args.threshold, float),
+        "combined_policy": _parse_list(args.combined_policies, str),
     }
+    policies = overrides.get("combined_policy") or []
+    if any(policy not in ("continuous", "entry_only") for policy in policies):
+        parser.error("--combined-policies supports continuous and entry_only")
     try:
         risk_overrides = {
             "position_size_pct": _parse_list(args.position_sizes, float),
@@ -889,6 +936,7 @@ def main():
         macro_data_path=args.macro_data,
         device=args.device,
         seed=args.seed,
+        allow_short=not args.long_only,
         max_combinations=args.max_combinations,
         grid_overrides=overrides,
         risk_overrides=risk_overrides,
