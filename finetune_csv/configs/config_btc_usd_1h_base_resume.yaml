@@ -1,0 +1,55 @@
+# Resume config for btc_usd_1h_base_prod
+# Starts from the best base model saved at epoch 19 and completes the remaining 6 epochs.
+
+data:
+  data_path: "./data/BTC_USD_1h.csv"
+  lookback_window: 512
+  predict_window: 48
+  max_context: 512
+  clip: 5.0
+  train_ratio: 0.85
+  val_ratio: 0.10
+  test_ratio: 0.05
+
+training:
+  tokenizer_epochs: 30
+  basemodel_epochs: 6
+  batch_size: 16
+  log_interval: 50
+  num_workers: 4
+  seed: 42
+
+  tokenizer_learning_rate: 0.0001
+  predictor_learning_rate: 0.000002
+
+  adam_beta1: 0.9
+  adam_beta2: 0.95
+  adam_weight_decay: 0.1
+
+  accumulation_steps: 4
+
+model_paths:
+  pretrained_tokenizer: "NeoQuasar/Kronos-Tokenizer-base"
+  pretrained_predictor: "./finetune_csv/finetuned/btc_usd_1h_base_prod/basemodel/best_model"
+  finetuned_tokenizer: "./finetune_csv/finetuned/btc_usd_1h_base_prod/tokenizer/best_model"
+
+  exp_name: "btc_usd_1h_base_prod_resume"
+  base_path: "./finetune_csv/finetuned/"
+
+  base_save_path: ""
+
+  tokenizer_save_name: "tokenizer"
+  basemodel_save_name: "basemodel"
+
+experiment:
+  name: "btc_usd_1h_base_resume"
+  description: "Resume BTC/USD 1h base model training from epoch 19 best"
+  use_comet: false
+
+  train_tokenizer: false
+  train_basemodel: true
+  skip_existing: false
+
+device:
+  use_cuda: true
+  device_id: 0
