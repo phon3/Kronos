@@ -320,16 +320,20 @@ def _json_value(value):
 
 
 def _export_candidates(results: pd.DataFrame, output_dir: str, top_n: int) -> pd.DataFrame:
-    valid = results[np.isfinite(results["score"])].sort_values("score", ascending=False).copy()
-    performance_columns = [
-        "oos_total_return", "oos_sharpe_ratio", "oos_max_drawdown", "oos_win_rate", "oos_total_trades"
-    ]
-    valid["performance_signature"] = valid[performance_columns].round(6).astype(str).agg("|".join, axis=1)
-    top = valid.drop_duplicates("performance_signature", keep="first").head(top_n).copy()
-    top = top.drop(columns=["performance_signature"])
-    top.insert(0, "candidate_rank", range(1, len(top) + 1))
     os.makedirs(output_dir, exist_ok=True)
     results.sort_values("score", ascending=False).to_csv(os.path.join(output_dir, "all_results.csv"), index=False)
+    valid = results[np.isfinite(results["score"])].sort_values("score", ascending=False).copy()
+    if valid.empty:
+        top = valid.copy()
+    else:
+        performance_columns = [
+            "oos_total_return", "oos_sharpe_ratio", "oos_max_drawdown", "oos_win_rate", "oos_total_trades"
+        ]
+        signatures = valid[performance_columns].round(6).astype(str).apply(lambda row: "|".join(row), axis=1)
+        valid["performance_signature"] = signatures
+        top = valid.drop_duplicates("performance_signature", keep="first").head(top_n).copy()
+        top = top.drop(columns=["performance_signature"])
+    top.insert(0, "candidate_rank", range(1, len(top) + 1))
     top.to_csv(os.path.join(output_dir, "top_candidates.csv"), index=False)
     records = []
     metric_prefixes = ("is_", "oos_")

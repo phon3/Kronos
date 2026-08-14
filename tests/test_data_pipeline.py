@@ -17,7 +17,7 @@ from data_ingestion.data_validator import DataValidator
 from data_ingestion.converters import CSVConverter
 from backtest.crypto_backtest import CryptoBacktester
 from backtest import backtest_runner
-from backtest.param_sweep import _combine_signals, _score_row, run_optimizer
+from backtest.param_sweep import _combine_signals, _export_candidates, _score_row, run_optimizer
 import webui.app as webui_app
 from webui.app import UI_VERSION, app
 
@@ -391,6 +391,24 @@ def test_optimizer_dry_run_reports_large_grid_without_loading_data():
 
     assert results.empty
     assert top.empty
+
+
+def test_optimizer_exports_empty_candidates_when_all_results_filtered(tmp_path):
+    results = pd.DataFrame([{
+        "score": float("-inf"),
+        "oos_total_return": 0.0,
+        "oos_sharpe_ratio": 0.0,
+        "oos_max_drawdown": 0.0,
+        "oos_win_rate": 0.0,
+        "oos_total_trades": 0,
+    }])
+
+    top = _export_candidates(results, str(tmp_path), top_n=5)
+
+    assert top.empty
+    assert (tmp_path / "all_results.csv").exists()
+    assert (tmp_path / "top_candidates.csv").exists()
+    assert json.loads((tmp_path / "live_test_candidates.json").read_text()) == []
 
 
 def test_optimizer_exports_top_live_candidates(sample_kronos_csv, tmp_path):
