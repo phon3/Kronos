@@ -19,6 +19,7 @@ from backtest.crypto_backtest import CryptoBacktester
 from backtest import backtest_runner
 from backtest.param_sweep import (
     _combine_signals,
+    _evaluate_signals,
     _export_candidates,
     _score_row,
     run_optimizer,
@@ -442,6 +443,24 @@ def test_combined_optimizer_closes_when_confirmation_disappears():
     combined = _combine_signals(kronos, trend, allow_short=True)
 
     assert combined["position"].tolist() == [1, 0, 1]
+
+
+def test_optimizer_uses_common_timestamp_split():
+    index = pd.date_range("2024-01-01", periods=10, freq="1h")
+    signals = pd.DataFrame({
+        "actual_close": np.arange(100, 110),
+        "position": np.zeros(10),
+    }, index=index)
+
+    metrics = _evaluate_signals(
+        signals,
+        risk={},
+        initial_capital=10_000,
+        train_ratio=0.5,
+        split_timestamp=index[7],
+    )
+
+    assert metrics["oos_buy_hold_return"] == pytest.approx((109 - 107) / 107)
 
 
 def test_optimizer_score_filters_low_trade_candidates():

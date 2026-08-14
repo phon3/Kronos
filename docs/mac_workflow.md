@@ -283,7 +283,7 @@ backtest_results/btc_trend/
 
 ### 3.6 Backtest optimizer (select live-test candidates)
 
-The optimizer sweeps signal and risk settings, evaluates each configuration on separate in-sample and out-of-sample periods, filters configurations with too few out-of-sample trades, and exports the top candidates. Start with `--dry-run` to inspect the combination count before running work.
+The optimizer sweeps signal and risk settings, evaluates each configuration on common timestamp-aligned in-sample and out-of-sample periods, filters configurations with too few out-of-sample trades, and exports the top candidates. Start with `--dry-run` to inspect the combination count before running work.
 
 ```bash
 # Fast trend optimizer; export the top 3 behaviorally distinct candidates

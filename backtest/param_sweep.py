@@ -321,9 +321,16 @@ def _evaluate_signals(
     initial_capital: float,
     train_ratio: float,
     validation_folds: int = 3,
+    split_timestamp: Optional[pd.Timestamp] = None,
 ) -> dict:
-    split_idx = max(1, min(len(signals) - 1, int(len(signals) * train_ratio)))
-    segments = {"is": signals.iloc[:split_idx], "oos": signals.iloc[split_idx:]}
+    if split_timestamp is not None and isinstance(signals.index, pd.DatetimeIndex):
+        segments = {
+            "is": signals[signals.index < split_timestamp],
+            "oos": signals[signals.index >= split_timestamp],
+        }
+    else:
+        split_idx = max(1, min(len(signals) - 1, int(len(signals) * train_ratio)))
+        segments = {"is": signals.iloc[:split_idx], "oos": signals.iloc[split_idx:]}
 
     def evaluate(segment: pd.DataFrame) -> dict:
         backtester = CryptoBacktester(initial_capital=initial_capital, allow_short=True, **{
@@ -453,6 +460,8 @@ def run_optimizer(
         data = data.tail(max_data_rows).reset_index(drop=True)
     if len(data) < 2:
         raise ValueError("Backtest data must contain at least two rows")
+    split_idx = max(1, min(len(data) - 1, int(len(data) * train_ratio)))
+    split_timestamp = data["timestamps"].iloc[split_idx]
 
     predictions = None
     actual = data.set_index("timestamps")[["close"]]
@@ -531,13 +540,19 @@ def run_optimizer(
                 "sample_count": sample_count,
                 "max_data_rows": len(data),
                 "seed": seed,
+                "split_timestamp": str(split_timestamp),
                 **signal_config,
                 **risk,
                 "signal_signature": signature,
             }
             try:
                 row.update(_evaluate_signals(
-                    signals, risk, initial_capital, train_ratio, validation_folds=validation_folds
+                    signals,
+                    risk,
+                    initial_capital,
+                    train_ratio,
+                    validation_folds=validation_folds,
+                    split_timestamp=split_timestamp,
                 ))
                 row["oos_excess_return"] = row["oos_total_return"] - row["oos_buy_hold_return"]
                 row["trade_confidence"] = min(1.0, np.sqrt(row["oos_total_trades"] / max(target_trades, 1)))
