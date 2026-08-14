@@ -319,13 +319,16 @@ python -m backtest.param_sweep \
   --top-n 5 --max-data-rows 5000 --dry-run \
   --output ./backtest_results/optimizer_1h_inference_matrix/
 
-# Custom trend grid remains supported
+# Custom trend and risk grids remain supported
 python -m backtest.param_sweep \
   --data ./data/BTC_USD_15m.csv \
   --signal-mode trend --grid-profile quick --top-n 5 \
   --prd 60,120,240,480 --ext-break 0.03,0.05,0.08 \
   --ext-limit 0.01,0.02,0.03 --min-bars 3,5,10 \
-  --position-size 0.25 --stop-loss 0.08 \
+  --position-sizes 0.10,0.25,0.50 --stop-losses 0.04,0.08 \
+  --take-profits none,0.08,0.12 --loss-multipliers 1.0,1.5 \
+  --daily-loss-limits none,0.02,0.03 \
+  --tp-level-sets '0.03:0.5,0.06:0.5;0.05:0.33,0.10:0.33,0.15:0.34' \
   --output ./backtest_results/optimizer_15m/
 ```
 

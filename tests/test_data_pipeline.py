@@ -21,6 +21,8 @@ from backtest.param_sweep import (
     _combine_signals,
     _evaluate_signals,
     _export_candidates,
+    _parse_tp_level_sets,
+    _risk_grid,
     _score_row,
     run_optimizer,
     run_optimizer_matrix,
@@ -505,6 +507,26 @@ def test_optimizer_dry_run_reports_large_grid_without_loading_data():
 
     assert results.empty
     assert top.empty
+
+
+def test_optimizer_custom_risk_grid_includes_single_and_multitarget_exits():
+    tp_sets = _parse_tp_level_sets("0.03:0.5,0.06:0.5;0.05:0.33,0.10:0.33,0.15:0.34")
+    configs = _risk_grid("quick", overrides={
+        "position_size_pct": [0.25, 0.5],
+        "stop_loss_pct": [0.08],
+        "take_profit_pct": [None, 0.10],
+        "loss_multiplier": [1.0],
+        "daily_loss_limit_pct": [None, 0.03],
+        "take_profit_levels": tp_sets,
+    })
+
+    assert len(configs) == 16
+    assert sum(config["take_profit_levels"] is not None for config in configs) == 8
+
+
+def test_optimizer_rejects_incomplete_tp_fractions():
+    with pytest.raises(ValueError, match="total 1.0"):
+        _parse_tp_level_sets("0.03:0.4,0.06:0.4")
 
 
 def test_optimizer_matrix_dry_run_does_not_load_data():

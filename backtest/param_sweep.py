@@ -198,7 +198,7 @@ def _grid_profile(name: str) -> dict:
     return profiles[name]
 
 
-def _risk_grid(name: str) -> list[dict]:
+def _risk_grid(name: str, overrides: Optional[dict] = None) -> list[dict]:
     presets = {
         "conservative": dict(position_size_pct=0.10, stop_loss_pct=0.04, take_profit_pct=0.08,
                              loss_multiplier=1.0, daily_loss_limit_pct=0.02, take_profit_levels=None),
@@ -210,6 +210,37 @@ def _risk_grid(name: str) -> list[dict]:
                           loss_multiplier=1.0, daily_loss_limit_pct=0.03,
                           take_profit_levels=[(0.05, 0.33), (0.10, 0.33), (0.15, 0.34)]),
     }
+    custom = {key: value for key, value in (overrides or {}).items() if value is not None}
+    if custom:
+        positions = custom.get("position_size_pct", [0.10, 0.25, 0.50])
+        stops = custom.get("stop_loss_pct", [0.04, 0.08, 0.12])
+        take_profits = custom.get("take_profit_pct", [None, 0.08, 0.12, 0.20])
+        multipliers = custom.get("loss_multiplier", [1.0, 1.5])
+        daily_limits = custom.get("daily_loss_limit_pct", [None, 0.03])
+        tp_sets = custom.get("take_profit_levels", [])
+        configs = [dict(
+            risk_profile="custom",
+            position_size_pct=position,
+            stop_loss_pct=stop,
+            take_profit_pct=take_profit,
+            loss_multiplier=multiplier,
+            daily_loss_limit_pct=daily_limit,
+            take_profit_levels=None,
+        ) for position, stop, take_profit, multiplier, daily_limit in itertools.product(
+            positions, stops, take_profits, multipliers, daily_limits
+        )]
+        configs.extend(dict(
+            risk_profile="custom_multitarget",
+            position_size_pct=position,
+            stop_loss_pct=stop,
+            take_profit_pct=None,
+            loss_multiplier=multiplier,
+            daily_loss_limit_pct=daily_limit,
+            take_profit_levels=levels,
+        ) for position, stop, multiplier, daily_limit, levels in itertools.product(
+            positions, stops, multipliers, daily_limits, tp_sets
+        ))
+        return configs
     if name == "quick":
         return [{"risk_profile": key, **value} for key, value in presets.items()]
     positions = [0.10, 0.25, 0.50] if name == "standard" else [0.05, 0.10, 0.25, 0.50, 0.75]
@@ -427,6 +458,7 @@ def run_optimizer(
     max_combinations: int = 20_000,
     dry_run: bool = False,
     grid_overrides: Optional[dict] = None,
+    risk_overrides: Optional[dict] = None,
     fixed_position_size: Optional[float] = None,
     fixed_stop_loss: Optional[float] = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -435,7 +467,7 @@ def run_optimizer(
     if grid_overrides:
         grid.update({key: value for key, value in grid_overrides.items() if value is not None})
     signal_configs = _signal_grid(signal_mode, grid)
-    risk_configs = _risk_grid(grid_profile)
+    risk_configs = _risk_grid(grid_profile, overrides=risk_overrides)
     if fixed_position_size is not None:
         for risk in risk_configs:
             risk["position_size_pct"] = fixed_position_size
@@ -622,6 +654,28 @@ def _parse_list(value: Optional[str], value_type) -> Optional[list]:
     return [value_type(item.strip()) for item in value.split(",") if item.strip()] if value else None
 
 
+def _parse_optional_floats(value: Optional[str]) -> Optional[list]:
+    if not value:
+        return None
+    return [None if item.strip().lower() == "none" else float(item) for item in value.split(",")]
+
+
+def _parse_tp_level_sets(value: Optional[str]) -> Optional[list]:
+    if not value:
+        return None
+    level_sets = []
+    for raw_set in value.split(";"):
+        if not raw_set.strip() or raw_set.strip().lower() == "none":
+            continue
+        levels = [tuple(float(part) for part in level.split(":")) for level in raw_set.split(",")]
+        if any(len(level) != 2 or level[0] <= 0 or level[1] <= 0 for level in levels):
+            raise ValueError(f"Invalid TP level set: {raw_set}")
+        if not np.isclose(sum(level[1] for level in levels), 1.0):
+            raise ValueError(f"TP fractions must total 1.0: {raw_set}")
+        level_sets.append(levels)
+    return level_sets
+
+
 def main():
     parser = argparse.ArgumentParser(description="Optimize Kronos backtest settings and select live-test candidates")
     parser.add_argument("--data", required=True, help="Path to CSV with OHLCV data")
@@ -657,6 +711,12 @@ def main():
     parser.add_argument("--threshold", default=None)
     parser.add_argument("--position-size", type=float, default=None)
     parser.add_argument("--stop-loss", type=float, default=None)
+    parser.add_argument("--position-sizes", default=None)
+    parser.add_argument("--stop-losses", default=None)
+    parser.add_argument("--take-profits", default=None)
+    parser.add_argument("--loss-multipliers", default=None)
+    parser.add_argument("--daily-loss-limits", default=None)
+    parser.add_argument("--tp-level-sets", default=None)
     args = parser.parse_args()
 
     if not 0 < args.train_ratio < 1:
@@ -675,6 +735,17 @@ def main():
         "min_bars": _parse_list(args.min_bars, int),
         "threshold": _parse_list(args.threshold, float),
     }
+    try:
+        risk_overrides = {
+            "position_size_pct": _parse_list(args.position_sizes, float),
+            "stop_loss_pct": _parse_list(args.stop_losses, float),
+            "take_profit_pct": _parse_optional_floats(args.take_profits),
+            "loss_multiplier": _parse_list(args.loss_multipliers, float),
+            "daily_loss_limit_pct": _parse_optional_floats(args.daily_loss_limits),
+            "take_profit_levels": _parse_tp_level_sets(args.tp_level_sets),
+        }
+    except ValueError as error:
+        parser.error(str(error))
     optimizer_kwargs = dict(
         data_path=args.data,
         signal_mode=args.signal_mode,
@@ -694,6 +765,7 @@ def main():
         seed=args.seed,
         max_combinations=args.max_combinations,
         grid_overrides=overrides,
+        risk_overrides=risk_overrides,
         fixed_position_size=args.position_size,
         fixed_stop_loss=args.stop_loss,
     )
