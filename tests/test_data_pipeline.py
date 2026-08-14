@@ -17,7 +17,13 @@ from data_ingestion.data_validator import DataValidator
 from data_ingestion.converters import CSVConverter
 from backtest.crypto_backtest import CryptoBacktester
 from backtest import backtest_runner
-from backtest.param_sweep import _combine_signals, _export_candidates, _score_row, run_optimizer
+from backtest.param_sweep import (
+    _combine_signals,
+    _export_candidates,
+    _score_row,
+    run_optimizer,
+    run_optimizer_matrix,
+)
 import webui.app as webui_app
 from webui.app import UI_VERSION, app
 
@@ -180,6 +186,28 @@ class TestCryptoBacktester:
         assert "sharpe_ratio" in metrics
         assert "max_drawdown" in metrics
         assert isinstance(metrics["total_trades"], int)
+
+    @pytest.mark.parametrize("side, expected_entry, expected_exit", [
+        (1, 101.0, 99.0),
+        (-1, 99.0, 101.0),
+    ])
+    def test_round_trip_slippage_is_adverse(self, side, expected_entry, expected_exit):
+        dates = pd.date_range("2024-01-01", periods=2, freq="1h")
+        signals = pd.DataFrame({"actual_close": [100.0, 100.0], "position": [0, side]}, index=dates)
+        backtester = CryptoBacktester(
+            initial_capital=10_000,
+            fee_pct=0,
+            slippage_pct=0.01,
+            position_size_pct=1.0,
+        )
+
+        results, trades = backtester.run_backtest(signals)
+        opened = next(trade for trade in trades if trade["action"] == "OPEN")
+        closed = next(trade for trade in trades if trade["action"] == "CLOSE")
+
+        assert opened["price"] == pytest.approx(expected_entry)
+        assert closed["price"] == pytest.approx(expected_exit)
+        assert results["capital"].iloc[-1] < backtester.initial_capital
 
     def test_backtest_with_output(self, tmp_path):
         dates = pd.date_range("2024-01-01", periods=200, freq="1h")
@@ -380,6 +408,24 @@ def test_optimizer_score_filters_low_trade_candidates():
     assert np.isfinite(_score_row(row, "composite", min_trades=2))
 
 
+def test_optimizer_composite_rewards_excess_return_and_trade_confidence():
+    base = {
+        "is_sharpe_ratio": 2.0,
+        "oos_sharpe_ratio": 2.0,
+        "oos_total_return": 0.15,
+        "oos_max_drawdown": -0.05,
+        "oos_profitable_folds": 3,
+        "oos_validation_folds": 3,
+        "oos_worst_fold_return": 0.01,
+    }
+    low_confidence = {**base, "oos_buy_hold_return": 0.10, "oos_total_trades": 10}
+    high_confidence = {**base, "oos_buy_hold_return": 0.10, "oos_total_trades": 30}
+    underperforming = {**base, "oos_buy_hold_return": 0.20, "oos_total_trades": 30}
+
+    assert _score_row(high_confidence, "composite", 10) > _score_row(low_confidence, "composite", 10)
+    assert _score_row(high_confidence, "composite", 10) > _score_row(underperforming, "composite", 10)
+
+
 def test_optimizer_dry_run_reports_large_grid_without_loading_data():
     results, top = run_optimizer(
         data_path="unused.csv",
@@ -387,6 +433,20 @@ def test_optimizer_dry_run_reports_large_grid_without_loading_data():
         grid_profile="exhaustive",
         max_combinations=1,
         dry_run=True,
+    )
+
+    assert results.empty
+    assert top.empty
+
+
+def test_optimizer_matrix_dry_run_does_not_load_data():
+    results, top = run_optimizer_matrix(
+        lookbacks=[256, 512],
+        pred_lengths=[24, 48],
+        sample_counts=[1, 3],
+        output_dir="unused",
+        dry_run=True,
+        data_path="unused.csv",
     )
 
     assert results.empty
@@ -429,6 +489,7 @@ def test_optimizer_exports_top_live_candidates(sample_kronos_csv, tmp_path):
     )
 
     assert len(results) == 4
+    assert {"oos_excess_return", "trade_confidence", "oos_worst_fold_return"}.issubset(results.columns)
     assert 1 <= len(top) <= 3
     assert (tmp_path / "all_results.csv").exists()
     assert (tmp_path / "top_candidates.csv").exists()

@@ -305,8 +305,19 @@ python -m backtest.param_sweep \
   --model ./finetune_csv/finetuned/btc_usd_1h_gpu/basemodel/best_model \
   --tokenizer ./finetune_csv/finetuned/btc_usd_1h_gpu/tokenizer/best_model \
   --device mps --signal-mode combined --grid-profile quick \
-  --top-n 5 --max-data-rows 1024 \
+  --top-n 5 --min-trades 10 --target-trades 30 --validation-folds 3 \
+  --max-data-rows 5000 \
   --output ./backtest_results/optimizer_1h_combined/
+
+# Compare inference settings as one ranked experiment
+python -m backtest.param_sweep \
+  --data ./data/BTC_USD_1h.csv \
+  --model ./finetune_csv/finetuned/btc_usd_1h_gpu/basemodel/best_model \
+  --tokenizer ./finetune_csv/finetuned/btc_usd_1h_gpu/tokenizer/best_model \
+  --device mps --signal-mode combined --grid-profile quick \
+  --lookbacks 256,512 --pred-lens 24,48 --sample-counts 1,3 \
+  --top-n 5 --max-data-rows 5000 --dry-run \
+  --output ./backtest_results/optimizer_1h_inference_matrix/
 
 # Custom trend grid remains supported
 python -m backtest.param_sweep \
@@ -324,15 +335,11 @@ Each run writes:
 - `top_candidates.csv`: ranked top 3/5 configurations
 - `live_test_candidates.json`: machine-readable settings and metrics for the live-testing process
 
-Use `--rank-by composite` (default) for risk-adjusted, stability-penalized ranking. Alternatives are `sharpe`, `return`, and `calmar`. Standard and exhaustive grids are protected by `--max-combinations`; raise that limit explicitly only after reviewing `--dry-run` output.
+Use `--rank-by composite` (default) for confidence-adjusted ranking. It rewards OOS excess return over buy-and-hold and profitable validation folds while penalizing drawdown, low trade counts, negative worst-fold returns, and IS/OOS Sharpe instability. Alternatives are `sharpe`, `return`, and `calmar`. Standard and exhaustive grids are protected by `--max-combinations`; raise that limit explicitly only after reviewing `--dry-run` output.
 
-### 3.7 Best params found (from sweep results)
+### 3.7 Historical sweep results
 
-| Timeframe | prd | ext_break | ext_limit | min_bars | OOS Return | Sharpe | Win Rate |
-|-----------|-----|-----------|-----------|----------|------------|--------|----------|
-| 15m       | 240 | 0.03      | 0.01      | 3        | 137.2%     | 17.85  | 100%     |
-| 1h        | 60  | 0.03      | 0.01      | 5        | 64.6%      | 16.19  | 100%     |
-| 1d        | 10  | 0.03      | 0.03      | 3        | 171.1%     | 5.97   | 90%      |
+Results generated before the corrected adverse exit-slippage model and multi-fold ranking are not valid live-test candidates. Rerun the optimizer before relying on any historical parameter table.
 
 ### 3.8 Compare all modes
 

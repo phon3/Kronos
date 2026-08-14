@@ -4,6 +4,7 @@ import argparse
 import itertools
 import json
 import os
+import random
 import sys
 from typing import Optional
 
@@ -274,14 +275,15 @@ def _metric_columns(prefix: str, metrics: dict) -> dict:
     return {f"{prefix}_{key}": metrics.get(key) for key in keys}
 
 
-def _score_row(row: dict, rank_by: str, min_trades: int) -> float:
+def _score_row(row: dict, rank_by: str, min_trades: int, target_trades: int = 30) -> float:
     trades = row.get("oos_total_trades", 0) or 0
     if trades < min_trades:
         return float("-inf")
     sharpe = row.get("oos_sharpe_ratio", 0) or 0
     total_return = row.get("oos_total_return", 0) or 0
+    benchmark_return = row.get("oos_buy_hold_return", 0) or 0
     drawdown = abs(row.get("oos_max_drawdown", 0) or 0)
-    if not all(np.isfinite(value) for value in (sharpe, total_return, drawdown)):
+    if not all(np.isfinite(value) for value in (sharpe, total_return, benchmark_return, drawdown)):
         return float("-inf")
     if rank_by == "sharpe":
         return sharpe
@@ -289,21 +291,56 @@ def _score_row(row: dict, rank_by: str, min_trades: int) -> float:
         return total_return
     if rank_by == "calmar":
         return total_return / drawdown if drawdown > 0 else float("-inf")
+    confidence = min(1.0, np.sqrt(trades / max(target_trades, 1)))
     is_sharpe = row.get("is_sharpe_ratio", 0) or 0
-    stability_penalty = abs(sharpe - is_sharpe) if np.isfinite(is_sharpe) else abs(sharpe)
-    return sharpe + 0.5 * total_return - 2.0 * drawdown - 0.25 * stability_penalty
+    stability_gap = abs(sharpe - is_sharpe) if np.isfinite(is_sharpe) else abs(sharpe)
+    excess_return = total_return - benchmark_return
+    profitable_folds = row.get("oos_profitable_folds", 0) or 0
+    validation_folds = row.get("oos_validation_folds", 1) or 1
+    fold_consistency = profitable_folds / validation_folds
+    worst_fold_return = row.get("oos_worst_fold_return", 0) or 0
+    adjusted_sharpe = np.clip(sharpe, -5, 5) * confidence
+    return (
+        adjusted_sharpe + 4.0 * excess_return - 2.0 * drawdown
+        - 0.25 * min(stability_gap, 5) + fold_consistency
+        + 2.0 * min(worst_fold_return, 0)
+    )
 
 
-def _evaluate_signals(signals: pd.DataFrame, risk: dict, initial_capital: float, train_ratio: float) -> dict:
+def _evaluate_signals(
+    signals: pd.DataFrame,
+    risk: dict,
+    initial_capital: float,
+    train_ratio: float,
+    validation_folds: int = 3,
+) -> dict:
     split_idx = max(1, min(len(signals) - 1, int(len(signals) * train_ratio)))
     segments = {"is": signals.iloc[:split_idx], "oos": signals.iloc[split_idx:]}
-    output = {}
-    for prefix, segment in segments.items():
+
+    def evaluate(segment: pd.DataFrame) -> dict:
         backtester = CryptoBacktester(initial_capital=initial_capital, allow_short=True, **{
             key: value for key, value in risk.items() if key != "risk_profile"
         })
         results, trades = backtester.run_backtest(segment)
-        output.update(_metric_columns(prefix, backtester.calculate_metrics(results, trades)))
+        return backtester.calculate_metrics(results, trades)
+
+    output = {}
+    for prefix, segment in segments.items():
+        output.update(_metric_columns(prefix, evaluate(segment)))
+    fold_indices = np.array_split(np.arange(len(segments["oos"])), validation_folds)
+    folds = [segments["oos"].iloc[indices] for indices in fold_indices if len(indices)]
+    fold_metrics = [evaluate(fold) for fold in folds]
+    fold_returns = [metrics["total_return"] for metrics in fold_metrics]
+    output["oos_validation_folds"] = len(fold_metrics)
+    output["oos_profitable_folds"] = sum(value > 0 for value in fold_returns)
+    output["oos_worst_fold_return"] = min(fold_returns, default=0)
+    output["oos_median_fold_return"] = float(np.median(fold_returns)) if fold_returns else 0
+    output["oos_worst_fold_sharpe"] = min(
+        (metrics["sharpe_ratio"] for metrics in fold_metrics), default=0
+    )
+    for index, metrics in enumerate(fold_metrics, start=1):
+        output[f"oos_fold_{index}_return"] = metrics["total_return"]
+        output[f"oos_fold_{index}_trades"] = metrics["total_trades"]
     return output
 
 
@@ -357,7 +394,9 @@ def run_optimizer(
     grid_profile: str = "quick",
     top_n: int = 5,
     rank_by: str = "composite",
-    min_trades: int = 3,
+    min_trades: int = 10,
+    target_trades: int = 30,
+    validation_folds: int = 3,
     train_ratio: float = 0.7,
     initial_capital: float = 100_000,
     max_data_rows: Optional[int] = None,
@@ -368,6 +407,7 @@ def run_optimizer(
     lookback: int = 512,
     pred_len: int = 48,
     sample_count: int = 1,
+    seed: int = 123,
     max_combinations: int = 20_000,
     dry_run: bool = False,
     grid_overrides: Optional[dict] = None,
@@ -416,6 +456,12 @@ def run_optimizer(
             raise ValueError(f"Model timeframe {model_timeframe} does not match data timeframe {data_timeframe}")
         if len(data) < lookback + pred_len:
             raise ValueError(f"Model optimization needs at least {lookback + pred_len} data rows")
+        import torch
+        random.seed(seed)
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)
         predictor = load_model(tokenizer_path, model_path, device=device, max_context=lookback)
         predictions = generate_predictions(
             predictor, data, lookback=lookback, pred_len=pred_len, sample_count=sample_count
@@ -467,10 +513,27 @@ def run_optimizer(
             )
         signature = json.dumps(signal_config, sort_keys=True)
         for risk in risk_configs:
-            row = {"signal_mode": signal_mode, **signal_config, **risk, "signal_signature": signature}
+            row = {
+                "signal_mode": signal_mode,
+                "data_path": data_path,
+                "model_path": model_path,
+                "lookback": lookback,
+                "pred_len": pred_len,
+                "sample_count": sample_count,
+                "max_data_rows": len(data),
+                "seed": seed,
+                **signal_config,
+                **risk,
+                "signal_signature": signature,
+            }
             try:
-                row.update(_evaluate_signals(signals, risk, initial_capital, train_ratio))
-                row["score"] = _score_row(row, rank_by, min_trades)
+                row.update(_evaluate_signals(
+                    signals, risk, initial_capital, train_ratio, validation_folds=validation_folds
+                ))
+                row["oos_excess_return"] = row["oos_total_return"] - row["oos_buy_hold_return"]
+                row["trade_confidence"] = min(1.0, np.sqrt(row["oos_total_trades"] / max(target_trades, 1)))
+                row["sharpe_stability_gap"] = abs(row["oos_sharpe_ratio"] - row["is_sharpe_ratio"])
+                row["score"] = _score_row(row, rank_by, min_trades, target_trades=target_trades)
                 row["status"] = "valid" if np.isfinite(row["score"]) else "filtered"
             except Exception as error:
                 row.update(score=float("-inf"), status="error", error=str(error))
@@ -486,6 +549,45 @@ def run_optimizer(
     return results_df, top_df
 
 
+def run_optimizer_matrix(
+    lookbacks: list[int],
+    pred_lengths: list[int],
+    sample_counts: list[int],
+    output_dir: str,
+    top_n: int = 5,
+    dry_run: bool = False,
+    **optimizer_kwargs,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Run and rank multiple inference configurations as one experiment."""
+    inference_configs = list(itertools.product(lookbacks, pred_lengths, sample_counts))
+    print(f"Inference matrix: {len(inference_configs)} configurations")
+    if dry_run:
+        for lookback, pred_len, sample_count in inference_configs:
+            print(f"  lookback={lookback} pred_len={pred_len} samples={sample_count}")
+        return pd.DataFrame(), pd.DataFrame()
+    result_frames = []
+    for index, (lookback, pred_len, sample_count) in enumerate(inference_configs, start=1):
+        run_output = os.path.join(output_dir, f"inference_lb{lookback}_pl{pred_len}_s{sample_count}")
+        print(
+            f"Inference configuration {index}/{len(inference_configs)}: "
+            f"lookback={lookback}, pred_len={pred_len}, samples={sample_count}"
+        )
+        results, _ = run_optimizer(
+            output_dir=run_output,
+            top_n=top_n,
+            lookback=lookback,
+            pred_len=pred_len,
+            sample_count=sample_count,
+            dry_run=False,
+            **optimizer_kwargs,
+        )
+        result_frames.append(results)
+    all_results = pd.concat(result_frames, ignore_index=True) if result_frames else pd.DataFrame()
+    top = _export_candidates(all_results, output_dir, top_n)
+    print(f"Inference matrix saved {len(all_results)} results and {len(top)} candidates to {output_dir}")
+    return all_results, top
+
+
 def _parse_list(value: Optional[str], value_type) -> Optional[list]:
     return [value_type(item.strip()) for item in value.split(",") if item.strip()] if value else None
 
@@ -498,7 +600,9 @@ def main():
     parser.add_argument("--grid-profile", choices=["quick", "standard", "exhaustive"], default="quick")
     parser.add_argument("--top-n", type=int, choices=range(1, 21), default=5)
     parser.add_argument("--rank-by", choices=["composite", "sharpe", "return", "calmar"], default="composite")
-    parser.add_argument("--min-trades", type=int, default=3)
+    parser.add_argument("--min-trades", type=int, default=10)
+    parser.add_argument("--target-trades", type=int, default=30)
+    parser.add_argument("--validation-folds", type=int, default=3)
     parser.add_argument("--train-ratio", type=float, default=0.7)
     parser.add_argument("--capital", type=float, default=100_000)
     parser.add_argument("--max-data-rows", type=int, default=5000)
@@ -509,6 +613,10 @@ def main():
     parser.add_argument("--lookback", type=int, default=512)
     parser.add_argument("--pred-len", type=int, default=48)
     parser.add_argument("--samples", type=int, default=1)
+    parser.add_argument("--lookbacks", default=None)
+    parser.add_argument("--pred-lens", default=None)
+    parser.add_argument("--sample-counts", default=None)
+    parser.add_argument("--seed", type=int, default=123)
     parser.add_argument("--max-combinations", type=int, default=20_000)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--prd", default=None)
@@ -522,6 +630,8 @@ def main():
 
     if not 0 < args.train_ratio < 1:
         parser.error("--train-ratio must be between 0 and 1")
+    if args.min_trades < 0 or args.target_trades < 1 or args.validation_folds < 1:
+        parser.error("trade thresholds and validation folds must be positive")
     if args.signal_mode in ("kronos", "combined") and (not args.model or not args.tokenizer):
         parser.error("--model and --tokenizer are required for Kronos modes")
     if args.signal_mode == "multi_tf" and not args.macro_data:
@@ -534,17 +644,52 @@ def main():
         "min_bars": _parse_list(args.min_bars, int),
         "threshold": _parse_list(args.threshold, float),
     }
-    run_optimizer(
-        data_path=args.data, output_dir=args.output, signal_mode=args.signal_mode,
-        grid_profile=args.grid_profile, top_n=args.top_n, rank_by=args.rank_by,
-        min_trades=args.min_trades, train_ratio=args.train_ratio,
-        initial_capital=args.capital, max_data_rows=args.max_data_rows,
-        model_path=args.model, tokenizer_path=args.tokenizer, macro_data_path=args.macro_data,
-        device=args.device, lookback=args.lookback, pred_len=args.pred_len,
-        sample_count=args.samples, max_combinations=args.max_combinations,
-        dry_run=args.dry_run, grid_overrides=overrides,
-        fixed_position_size=args.position_size, fixed_stop_loss=args.stop_loss,
+    optimizer_kwargs = dict(
+        data_path=args.data,
+        signal_mode=args.signal_mode,
+        grid_profile=args.grid_profile,
+        rank_by=args.rank_by,
+        min_trades=args.min_trades,
+        target_trades=args.target_trades,
+        validation_folds=args.validation_folds,
+        train_ratio=args.train_ratio,
+        initial_capital=args.capital,
+        max_data_rows=args.max_data_rows,
+        model_path=args.model,
+        tokenizer_path=args.tokenizer,
+        macro_data_path=args.macro_data,
+        device=args.device,
+        seed=args.seed,
+        max_combinations=args.max_combinations,
+        grid_overrides=overrides,
+        fixed_position_size=args.position_size,
+        fixed_stop_loss=args.stop_loss,
     )
+    lookbacks = _parse_list(args.lookbacks, int) or [args.lookback]
+    pred_lengths = _parse_list(args.pred_lens, int) or [args.pred_len]
+    sample_counts = _parse_list(args.sample_counts, int) or [args.samples]
+    if any(value < 1 for value in lookbacks + pred_lengths + sample_counts):
+        parser.error("inference grid values must be positive")
+    if len(lookbacks) * len(pred_lengths) * len(sample_counts) > 1:
+        run_optimizer_matrix(
+            lookbacks=lookbacks,
+            pred_lengths=pred_lengths,
+            sample_counts=sample_counts,
+            output_dir=args.output,
+            top_n=args.top_n,
+            dry_run=args.dry_run,
+            **optimizer_kwargs,
+        )
+    else:
+        run_optimizer(
+            output_dir=args.output,
+            top_n=args.top_n,
+            lookback=lookbacks[0],
+            pred_len=pred_lengths[0],
+            sample_count=sample_counts[0],
+            dry_run=args.dry_run,
+            **optimizer_kwargs,
+        )
 
 
 if __name__ == "__main__":

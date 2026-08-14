@@ -366,7 +366,7 @@ class CryptoBacktester:
 
                 # Handle partial close (multi-target)
                 if partial_close_units > 0 and not should_close:
-                    exec_price = price * (1 + self.slippage_pct) if position > 0 else price * (1 - self.slippage_pct)
+                    exec_price = price * (1 - self.slippage_pct) if position > 0 else price * (1 + self.slippage_pct)
                     trade_value = partial_close_units * exec_price
                     fee = trade_value * self.fee_pct
 
@@ -402,7 +402,7 @@ class CryptoBacktester:
 
                 # Full close (signal change, stop-loss, or single take-profit)
                 if should_close or (target_signal != prev_signal and position != 0):
-                    exec_price = price * (1 + self.slippage_pct) if position > 0 else price * (1 - self.slippage_pct)
+                    exec_price = price * (1 - self.slippage_pct) if position > 0 else price * (1 + self.slippage_pct)
                     units = abs(position)
                     trade_value = units * exec_price
                     fee = trade_value * self.fee_pct
@@ -496,7 +496,7 @@ class CryptoBacktester:
         # Close any remaining position at the end
         if position != 0:
             last_price = signals_df["actual_close"].dropna().iloc[-1]
-            exec_price = last_price * (1 + self.slippage_pct) if position > 0 else last_price * (1 - self.slippage_pct)
+            exec_price = last_price * (1 - self.slippage_pct) if position > 0 else last_price * (1 + self.slippage_pct)
             units = abs(position)
             trade_value = units * exec_price
             fee = trade_value * self.fee_pct
