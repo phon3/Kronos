@@ -437,14 +437,14 @@ def test_trend_backtest_limits_input_rows(monkeypatch, tmp_path):
     assert received["rows"] == 120
 
 
-def test_combined_optimizer_closes_when_confirmation_disappears():
+def test_combined_optimizer_holds_through_neutral_trend_until_reversal():
     index = pd.date_range("2024-01-01", periods=3, freq="1h")
     kronos = pd.DataFrame({"actual_close": [100, 101, 102], "position": [1, 1, 1]}, index=index)
-    trend = pd.DataFrame({"trend_signal": [1, 0, 1]}, index=index)
+    trend = pd.DataFrame({"trend_signal": [1, 0, -1], "position": [1, 1, -1]}, index=index)
 
     combined = _combine_signals(kronos, trend, allow_short=True)
 
-    assert combined["position"].tolist() == [1, 0, 1]
+    assert combined["position"].tolist() == [1, 1, 0]
 
 
 def test_optimizer_uses_common_timestamp_split():

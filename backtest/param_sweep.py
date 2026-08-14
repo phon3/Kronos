@@ -311,11 +311,13 @@ def _signal_grid(mode: str, grid: dict) -> list[dict]:
 
 def _combine_signals(kronos: pd.DataFrame, trend: pd.DataFrame, allow_short: bool) -> pd.DataFrame:
     combined = kronos.copy()
-    combined["trend_signal"] = trend["trend_signal"].reindex(combined.index).ffill().fillna(0)
+    combined["kronos_position"] = combined["position"].astype(int)
+    combined["trend_signal"] = trend["trend_signal"].reindex(combined.index).fillna(0)
+    combined["trend_position"] = trend["position"].reindex(combined.index).ffill().fillna(0).astype(int)
     combined["signal"] = 0
-    combined.loc[(combined["position"] > 0) & (combined["trend_signal"] > 0), "signal"] = 1
+    combined.loc[(combined["kronos_position"] > 0) & (combined["trend_position"] > 0), "signal"] = 1
     if allow_short:
-        combined.loc[(combined["position"] < 0) & (combined["trend_signal"] < 0), "signal"] = -1
+        combined.loc[(combined["kronos_position"] < 0) & (combined["trend_position"] < 0), "signal"] = -1
     combined["position"] = combined["signal"].astype(int)
     return combined
 
@@ -324,6 +326,29 @@ def _metric_columns(prefix: str, metrics: dict) -> dict:
     keys = ["total_return", "annual_return", "sharpe_ratio", "max_drawdown", "win_rate",
             "profit_factor", "total_trades", "total_pnl", "final_capital", "buy_hold_return"]
     return {f"{prefix}_{key}": metrics.get(key) for key in keys}
+
+
+def _signal_diagnostics(signals: pd.DataFrame) -> dict:
+    position = signals["position"].fillna(0).astype(int)
+    diagnostics = {
+        "signal_bars": len(signals),
+        "long_position_bars": int((position > 0).sum()),
+        "short_position_bars": int((position < 0).sum()),
+        "flat_position_bars": int((position == 0).sum()),
+        "position_entries": int(((position != position.shift()) & (position != 0)).sum()),
+    }
+    for prefix, column in (("kronos", "kronos_position"), ("trend", "trend_position")):
+        if column in signals:
+            values = signals[column].fillna(0).astype(int)
+            diagnostics[f"{prefix}_long_bars"] = int((values > 0).sum())
+            diagnostics[f"{prefix}_short_bars"] = int((values < 0).sum())
+            diagnostics[f"{prefix}_neutral_bars"] = int((values == 0).sum())
+    if "trend_signal" in signals:
+        raw_trend = signals["trend_signal"].fillna(0).astype(int)
+        diagnostics["raw_trend_long_bars"] = int((raw_trend > 0).sum())
+        diagnostics["raw_trend_short_bars"] = int((raw_trend < 0).sum())
+        diagnostics["raw_trend_neutral_bars"] = int((raw_trend == 0).sum())
+    return diagnostics
 
 
 def _score_row(
@@ -608,9 +633,11 @@ def run_optimizer(
                 macro_prd=signal_config["macro_prd"], macro_ext_break=signal_config["macro_ext_break"],
                 macro_ext_limit=signal_config["macro_ext_limit"], macro_min_bars=signal_config["macro_min_bars"],
             )
+        signal_diagnostics = _signal_diagnostics(signals)
         evaluation_start = signals.index.min() if len(signals) else None
         evaluation_end = signals.index.max() if len(signals) else None
         oos_signals = signals[signals.index >= split_timestamp] if isinstance(signals.index, pd.DatetimeIndex) else signals
+        oos_signal_diagnostics = {f"oos_{key}": value for key, value in _signal_diagnostics(oos_signals).items()}
         oos_start = oos_signals.index.min() if len(oos_signals) else None
         oos_end = oos_signals.index.max() if len(oos_signals) else None
         signature = json.dumps(signal_config, sort_keys=True)
@@ -637,6 +664,8 @@ def run_optimizer(
                 "max_data_rows": len(data),
                 "seed": seed,
                 "split_timestamp": str(split_timestamp),
+                **signal_diagnostics,
+                **oos_signal_diagnostics,
                 **signal_config,
                 **risk,
                 "signal_signature": signature,

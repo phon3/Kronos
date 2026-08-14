@@ -169,14 +169,16 @@ class CryptoBacktester:
 
         # Align trend signals to the prediction period
         combined = kronos_signals.copy()
-        combined["trend_signal"] = trend_signals["trend_signal"].reindex(combined.index).ffill().fillna(0)
+        combined["kronos_position"] = combined["position"].astype(int)
+        combined["trend_signal"] = trend_signals["trend_signal"].reindex(combined.index).fillna(0)
+        combined["trend_position"] = trend_signals["position"].reindex(combined.index).ffill().fillna(0).astype(int)
 
         # Combined signal: only enter when both agree
         combined["signal"] = 0
-        kronos_long = combined["position"] > 0
-        kronos_short = combined["position"] < 0
-        trend_long = combined["trend_signal"] > 0
-        trend_short = combined["trend_signal"] < 0
+        kronos_long = combined["kronos_position"] > 0
+        kronos_short = combined["kronos_position"] < 0
+        trend_long = combined["trend_position"] > 0
+        trend_short = combined["trend_position"] < 0
 
         combined.loc[kronos_long & trend_long, "signal"] = 1
         if self.allow_short:
